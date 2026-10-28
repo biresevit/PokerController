@@ -11,6 +11,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--seed", type=int, default=17)
     parser.add_argument("--output", default="artifacts/azure-worker")
+    parser.add_argument("--leave-on-exit", action="store_true",
+        help="Leave all poker tables before stopping. By default seats are preserved for restart recovery.")
     args = parser.parse_args()
     scheduler_root = Path(__file__).resolve().parents[2] / "ScheduleController"
     if not scheduler_root.is_dir():
@@ -25,7 +27,8 @@ def main() -> None:
         handlers=[logging.FileHandler(output / "worker.log", encoding="utf-8"), logging.StreamHandler()])
     for name in ("httpx", "httpcore", "websockets"):
         logging.getLogger(name).setLevel(logging.WARNING)
-    settings = SimpleNamespace(seconds=0, seed=args.seed, output=str(output), target=0)
+    settings = SimpleNamespace(seconds=0, seed=args.seed, output=str(output), target=0,
+        leave_on_exit=args.leave_on_exit)
     try:
         asyncio.run(Pilot(settings).run_cloud_worker())
     except KeyboardInterrupt:
