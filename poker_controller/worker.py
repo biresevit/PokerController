@@ -19,6 +19,7 @@ def main() -> None:
         raise RuntimeError(f"ScheduleController project not found: {scheduler_root}")
     sys.path.insert(0, str(scheduler_root))
     from schedule_controller.pilot import Pilot
+    from poker_controller.system_metrics import sample as machine_metrics
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
     if (output / "stop").exists():
@@ -28,7 +29,7 @@ def main() -> None:
     for name in ("httpx", "httpcore", "websockets"):
         logging.getLogger(name).setLevel(logging.WARNING)
     settings = SimpleNamespace(seconds=0, seed=args.seed, output=str(output), target=0,
-        leave_on_exit=args.leave_on_exit)
+        leave_on_exit=args.leave_on_exit, telemetry_provider=machine_metrics)
     try:
         asyncio.run(Pilot(settings).run_cloud_worker())
     except KeyboardInterrupt:
