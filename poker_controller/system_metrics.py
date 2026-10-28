@@ -27,6 +27,9 @@ def _controller_version() -> str:
 
 
 POKER_CONTROLLER_VERSION = _controller_version()
+# Prime psutil's non-blocking counter. Subsequent samples represent CPU usage
+# since the previous telemetry sample instead of an arbitrary 200 ms instant.
+psutil.cpu_percent(interval=None)
 
 
 def _pdecision_version() -> str | None:
@@ -43,7 +46,7 @@ def sample() -> dict:
     memory = psutil.virtual_memory()
     disk = psutil.disk_usage(Path.cwd().anchor or "C:\\")
     return {
-        "cpu_percent": round(float(psutil.cpu_percent(interval=0.2)), 2),
+        "cpu_percent": round(float(psutil.cpu_percent(interval=None)), 2),
         "memory_percent": round(float(memory.percent), 2),
         "disk_percent": round(float(disk.percent), 2),
         "disk_free_bytes": int(disk.free),
