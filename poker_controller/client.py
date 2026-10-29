@@ -39,10 +39,26 @@ class EvenBetClient:
         self.table_select_indices: dict[int, int] = {}
         self.changed = asyncio.Event()
         self.auth = ""
+        self.chat_events = asyncio.Queue(maxsize=2000)
+        self.chat_history_requests = set()
+        self.chat_overflow = False
+        self.chat_waiters = {}
 
     def _on_message(self, message: dict):
         topic = message.get("t")
-        if topic == "AuthState":
+        if topic == "Chat":
+            from .chat import incoming_chat
+            if message.get("srcMsgId") in self.chat_history_requests:
+                message={**message,"history":True}
+                self.chat_history_requests.discard(message.get("srcMsgId"))
+            for item in incoming_chat(message):
+                key=(int(item["table_id"]),item["body"])
+                waiter=self.chat_waiters.get(key)
+                if waiter and not waiter[0].done() and not item["historical"] and item["author"].casefold() in waiter[1]:
+                    waiter[0].set_result(True)
+                try: self.chat_events.put_nowait(item)
+                except asyncio.QueueFull: self.chat_overflow=True
+        elif topic == "AuthState":
             self.auth = message.get("auth", "")
         elif topic == "GameState":
             state = message.get("gameState", message.get("GameState", {}))
@@ -178,6 +194,38 @@ class EvenBetClient:
                 pass
             raise
         return seat
+
+    async def read_chat(self, table_id: int):
+        request_id=self.connection.sequence+1
+        self.chat_history_requests.add(request_id)
+        try:
+            await self.connection.send("Chat",history=True,tableId=table_id,
+                playerEntryIdx=self.player_entry_idx(table_id),chatMessage=[])
+        except BaseException:
+            self.chat_history_requests.discard(request_id)
+            raise
+
+    async def send_chat(self, table_id: int, text: str):
+        if not isinstance(text,str) or not text.strip() or len(text.encode("utf-16-le"))>4000:
+            raise ValueError("A chat message must contain 1 to 2000 characters")
+        if self.hero_seat(self.states.get(table_id,{})) is None:
+            raise ValueError("The selected bot is no longer seated at this table")
+        from datetime import datetime,timezone
+        state=self.states[table_id];hero=state["s"][self.hero_seat(state)]
+        authors={str(value).casefold() for value in (self.settings.username,hero.get("dn"),hero.get("n")) if value}
+        key=(table_id,text.strip())
+        if key in self.chat_waiters:
+            raise ValueError("This message is already being sent")
+        future=asyncio.get_running_loop().create_future()
+        self.chat_waiters[key]=(future,authors)
+        try:
+            await self.connection.send("Chat",history=False,tableId=table_id,
+                playerEntryIdx=self.player_entry_idx(table_id),chatMessage=[{
+                    "a":self.settings.username,"c":"","i":288521,"l":0,"t":1,
+                    "m":text.strip(),"r":datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")}])
+            await asyncio.wait_for(future,8)
+        finally:
+            self.chat_waiters.pop(key,None)
 
     async def leave(self, table_id: int):
         return await self.connection.request("LeaveTable", tableId=table_id,
