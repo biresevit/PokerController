@@ -59,8 +59,8 @@ static class Program {
    var health=await response.Content.ReadFromJsonAsync<JsonElement>();return health.GetProperty("status").GetString()=="ready";
   }catch{return false;}
  }
- static async Task<Poll> Poll()=>await Request<Poll>("poll",new{instance_id=Instance,agent_version="1.0.12",apps_running=await RuntimeHealthy(),needs_install=!File.Exists(StateFile)&&!File.Exists(OperationFile)});
- static Task<JsonElement> Report(Job job,string phase,string detail="",Manifest? manifest=null)=>Request<JsonElement>("report",new{instance_id=Instance,agent_version="1.0.12",task_id=job.Id,phase,detail,pdecision_version=manifest?.PdecisionVersion,controller_version=manifest?.ControllerVersion});
+ static async Task<Poll> Poll()=>await Request<Poll>("poll",new{instance_id=Instance,agent_version="1.0.13",apps_running=await RuntimeHealthy(),needs_install=!File.Exists(StateFile)&&!File.Exists(OperationFile)});
+ static Task<JsonElement> Report(Job job,string phase,string detail="",Manifest? manifest=null)=>Request<JsonElement>("report",new{instance_id=Instance,agent_version="1.0.13",task_id=job.Id,phase,detail,pdecision_version=manifest?.PdecisionVersion,controller_version=manifest?.ControllerVersion});
  static Manifest Verify(Job job){
   byte[] bytes=Encoding.UTF8.GetBytes(job.Manifest),signature=Convert.FromBase64String(job.Signature);
   bool valid=false;foreach(var key in C.TrustedKeys){using var rsa=RSA.Create();rsa.ImportFromPem(key);if(rsa.VerifyData(bytes,signature,HashAlgorithmName.SHA256,RSASignaturePadding.Pss)){valid=true;break;}}
