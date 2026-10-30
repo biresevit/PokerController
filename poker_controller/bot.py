@@ -13,7 +13,7 @@ log = logging.getLogger(__name__)
 
 class Bot:
     def __init__(self, client: EvenBetClient, decisions: PDecision, table_id: int, *,
-                 platform=11, hand_history=False, max_actions: int | None = None):
+                 platform=11, hand_history=False, max_actions: int | None = None, control=None):
         if client.player_id is None:
             raise RuntimeError("Log in before creating a bot")
         self.client, self.decisions, self.table_id = client, decisions, table_id
@@ -25,8 +25,14 @@ class Bot:
         self.submitted: set[str] = set()
         self.actions = 0
         self.decision_hand: int | None = None
+        self.control=control
+        self.action_lock=asyncio.Lock()
 
     async def process(self, state: dict):
+        async with self.action_lock:
+            await self._process(state)
+
+    async def _process(self, state: dict):
         hero = self.client.hero_seat(state)
         if hero is None:
             return
@@ -63,6 +69,11 @@ class Bot:
         # Do not ask for an obsolete queued snapshot; receiver continues while HTTP is pending.
         if self.mapper.turn_key(self.client.states[self.table_id], hero) != key:
             return
+        if self.control:
+            manual,command=await self.control.offer(key)
+            if manual:
+                if command:await self.control.play(self,self.client.states[self.table_id],hero,key,command)
+                return
         hs["IsNewHand"] = self.decision_hand != state["gi"]
         decision = await self.decisions.decide(hs)
         self.decision_hand = state["gi"]
@@ -77,6 +88,10 @@ class Bot:
             log.error("PDecision returned CHECK for table %s hand %s, but legal actions are %s; folding",
                       self.table_id, state["gi"], latest.get("aa", []))
         action, funds = decision_to_play(decision, latest, hero)
+        if self.control:
+            if not await self.control.claim_auto(key):return
+            latest=self.client.states[self.table_id]
+            if self.client.hero_seat(latest)!=hero or self.mapper.turn_key(latest,hero)!=key:return
         # Record before sending: an ambiguous timeout must never cause a repeated monetary action.
         self.submitted.add(key)
         await self.client.play(self.table_id, action, funds)

@@ -6,3 +6,9 @@ artifacts/
 .env
 bin/
 obj/
+
+updater/bin/
+updater/obj/
+
+updater/**/bin/
+updater/**/obj/

@@ -5,25 +5,21 @@ from importlib.metadata import PackageNotFoundError, version
 import json
 import os
 from pathlib import Path
-import subprocess
+import sys
 import urllib.request
 import psutil
 
 
 def _controller_version() -> str:
+    if getattr(sys,'frozen',False):
+        info=Path(sys.executable).parent/'build-info.json'
+        if info.exists():return json.loads(info.read_text(encoding='utf-8'))['controllerVersion']
     try:
         release = version("poker-controller")
     except PackageNotFoundError:
         release = "development"
-    try:
-        commit = subprocess.run(
-            ["git", "rev-parse", "--short=12", "HEAD"],
-            cwd=Path(__file__).resolve().parents[1], capture_output=True, text=True,
-            check=True, timeout=1,
-        ).stdout.strip()
-    except (OSError, subprocess.SubprocessError):
-        commit = ""
-    return f"{release}+{commit}" if commit else release
+    return release
+
 
 
 POKER_CONTROLLER_VERSION = _controller_version()
