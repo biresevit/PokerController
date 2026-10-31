@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import html
+import re
 import time
 from dataclasses import dataclass
 from decimal import Decimal
 
-from .transport import Connection
+from .transport import Connection, ProtocolError
 
 
 @dataclass(frozen=True)
@@ -26,6 +28,25 @@ def to_funds(chips: str | float | Decimal) -> int:
     return int(amount)
 
 
+def hand_results(events: list) -> list[dict]:
+    """Read the table's own "X wins (Y) with Z" announcements (animation event type 15)."""
+    results = []
+    for event in events or []:
+        text = event.get("m") if isinstance(event, dict) and event.get("t") == 15 else None
+        if not isinstance(text, str) or " wins" not in text:
+            continue
+        seat = re.search(r'<nick s="(\d+)"', text)
+        name = re.search(r"<nick[^>]*>(.*?)</nick>", text)
+        amount = re.search(r'<money a="(\d+)"', text)
+        combination = re.search(r"<combination[^>]*>(.*?)</combination>", text)
+        results.append({"seat": int(seat.group(1)) if seat else event.get("s"),
+                        "name": html.unescape(name.group(1)) if name else "",
+                        "amount": int(amount.group(1)) / 100 if amount else None,
+                        "hand": html.unescape(combination.group(1)) if combination else None,
+                        "text": " ".join(html.unescape(re.sub(r"<[^>]+>", "", text)).split())})
+    return results
+
+
 class EvenBetClient:
     """Database-free session. The frontend currently proxies table messages to game servers."""
     def __init__(self, settings: Settings = Settings(), connection: Connection | None = None):
@@ -38,6 +59,8 @@ class EvenBetClient:
         self.state_versions: dict[int, int] = {}
         # When each table's latest GameState arrived; its clock fields count down from then.
         self.state_times: dict[int, float] = {}
+        # The latest finished hand per table: who won which pot, with what.
+        self.results: dict[int, dict] = {}
         self.table_entry_indices: dict[int, int] = {}
         self.table_select_indices: dict[int, int] = {}
         self.changed = asyncio.Event()
@@ -70,6 +93,12 @@ class EvenBetClient:
                 self.states[table_id] = copy.deepcopy(state)
                 self.state_versions[table_id] = self.state_versions.get(table_id, 0) + 1
                 self.state_times[table_id] = time.time()
+                won = hand_results(message.get("events"))
+                if won:
+                    previous = self.results.get(table_id)
+                    if previous and previous["hand_id"] == state.get("gi"):
+                        won = previous["winners"] + [w for w in won if w not in previous["winners"]]
+                    self.results[table_id] = {"hand_id": state.get("gi"), "winners": won}
                 self.changed.set()
         elif topic == "GoToTable" and "info" in message:
             info = message["info"]
@@ -205,6 +234,29 @@ class EvenBetClient:
             except Exception:
                 pass
             raise
+        return seat
+
+    async def rebuy(self, table_id: int, chips: str | float | Decimal, *, wait_big_blind: bool = False) -> int:
+        """Buy chips into the hero's own seat after losing the stack, as the web client's rebuy dialog does."""
+        seat = self.hero_seat(self.states.get(table_id, {}))
+        if seat is None:
+            raise ValueError("The hero is no longer seated")
+        funds = to_funds(chips)
+        limits = await self.buy_in_range(table_id)
+        if not limits["minAmount"] <= funds <= limits["maxAmount"]:
+            raise ValueError(f"Rebuy must be between {limits['minAmount']/100:g} and {limits['maxAmount']/100:g} chips")
+        try:
+            await self.connection.request("SitDown", tableId=table_id, playerEntryIdx=self.player_entry_idx(table_id),
+                seatIdx=seat, cash=funds, playerCommands=[36, 12, 4, 2 if wait_big_blind else 1, 10],
+                acceptedExchangeRate=0, acceptedPrecision=0, entryCnt=1, password="", paymentClubId=0,
+                returnAfterLeaveWithoutCalculation=False, srcCurrencyId=0, useCurrencyConversion=False)
+        except ProtocolError as error:
+            # Accepted, but credited when the hand in progress ends.
+            if not str(error.response.get("text", "")).startswith("Money will be added"):
+                raise
+        await self.wait_state(table_id, lambda s: self.hero_seat(s) == seat and s["s"][seat].get("c", 0) > 0,
+                              timeout=120)
+        await self.player_command(table_id, 10)
         return seat
 
     async def read_chat(self, table_id: int):

@@ -13,7 +13,7 @@ log = logging.getLogger(__name__)
 
 class Bot:
     def __init__(self, client: EvenBetClient, decisions: PDecision, table_id: int, *,
-                 platform=11, hand_history=False, max_actions: int | None = None, control=None):
+                 platform=11, hand_history=False, max_actions: int | None = None, control=None, on_bust=None):
         if client.player_id is None:
             raise RuntimeError("Log in before creating a bot")
         self.client, self.decisions, self.table_id = client, decisions, table_id
@@ -32,6 +32,9 @@ class Bot:
         self.leaving=False
         self.sit_out_requested=False
         self.last_return=0.0
+        # Called once each time the hero loses the whole stack; the owner rebuys or leaves.
+        self.on_bust=on_bust
+        self.busted=False
 
     async def process(self, state: dict):
         async with self.action_lock:
@@ -41,7 +44,15 @@ class Bot:
         hero = self.client.hero_seat(state)
         if hero is None:
             return
-        if state["s"][hero].get("f", 0) & 1:
+        seat = state["s"][hero]
+        if seat.get("c", 0) > 0 or seat.get("b", 0) > 0:
+            self.busted = False
+        elif not seat.get("d") or state.get("ts") == 3:
+            # No chips behind or in front and not in a hand: an all-in was lost.
+            if not self.busted and self.on_bust and not self.leaving:
+                self.busted = True
+                self.on_bust(self.table_id)
+        if seat.get("f", 0) & 1 and not self.busted:
             self.sit_out_requested = False
             await self.return_if_unintended(state)
         hs = self.mapper.convert(state, self.client.tables.get(self.table_id, {}))
