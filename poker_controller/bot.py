@@ -25,6 +25,7 @@ class Bot:
         self.submitted: set[str] = set()
         self.actions = 0
         self.decision_hand: int | None = None
+        self.manual_hand: int | None = None
         self.control=control
         self.action_lock=asyncio.Lock()
 
@@ -72,7 +73,12 @@ class Bot:
         if self.control:
             manual,command=await self.control.offer(key)
             if manual:
+                self.manual_hand=state["gi"]
                 if command:await self.control.play(self,self.client.states[self.table_id],hero,key,command)
+                return
+            # PDecision builds its decision tree from its own earlier decisions in the hand, so a
+            # hand that had a manual turn stays manual; automatic play resumes at the next hand.
+            if self.manual_hand==state["gi"]:
                 return
         hs["IsNewHand"] = self.decision_hand != state["gi"]
         decision = await self.decisions.decide(hs)

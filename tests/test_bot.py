@@ -210,3 +210,28 @@ async def test_illegal_check_logs_error_and_folds(state, caplog):
     await Bot(c, InvalidCheck(), state["ti"]).process(state)
     assert played == [(state["ti"], 1, 0)]
     assert "returned CHECK" in caplog.text and "folding" in caplog.text
+
+
+async def test_hand_with_a_manual_turn_stays_manual_until_next_hand(state):
+    c = EvenBetClient()
+    c.player_id = 73582719
+    c.states[state["ti"]] = copy.deepcopy(state)
+    played = []
+    async def play(*args):
+        played.append(args)
+    c.play = play
+    class Control:
+        manual = True
+        async def offer(self, key): return self.manual, None
+        async def claim_auto(self, key): return True
+    control = Control()
+    bot = Bot(c, FakeDecisions(), state["ti"], control=control)
+    await bot.process(state)
+    control.manual = False
+    await bot.process(copy.deepcopy(state))
+    assert not played
+    next_hand = copy.deepcopy(state)
+    next_hand["gi"] = state["gi"] + 1
+    c.states[state["ti"]] = next_hand
+    await bot.process(next_hand)
+    assert played == [(state["ti"], 3, 100)]
