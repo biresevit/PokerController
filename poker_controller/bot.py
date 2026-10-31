@@ -35,6 +35,8 @@ class Bot:
         # Called once each time the hero loses the whole stack; the owner rebuys or leaves.
         self.on_bust=on_bust
         self.busted=False
+        # Set while the account takes a planned break; the bot must stay away until it ends.
+        self.on_break=False
 
     async def process(self, state: dict):
         async with self.action_lock:
@@ -127,7 +129,7 @@ class Bot:
 
         Leaving the table is an intentional break, and under manual control the human decides.
         """
-        if self.leaving or time.monotonic() - self.last_return < 10:
+        if self.leaving or self.on_break or time.monotonic() - self.last_return < 10:
             return
         self.last_return = time.monotonic()
         try:

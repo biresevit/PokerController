@@ -123,3 +123,17 @@ async def test_rebuy_buys_into_the_heros_own_seat(mid_hand):
     sit = [m for m in seen if m["t"] == "SitDown"]
     assert len(sit) == 1 and sit[0]["seatIdx"] == 1 and sit[0]["cash"] == 10000 and 2 in sit[0]["playerCommands"]
     assert not any(m["t"] == "ReserveSeat" for m in seen)
+
+
+async def test_bot_stays_away_during_a_planned_break():
+    bot, state, busts = bot_at(5000, away=True)
+    pressed = []
+    async def sit_back(table_id):
+        pressed.append(table_id)
+    bot.client.sit_back = sit_back
+    bot.on_break = True
+    await bot.process(state)
+    assert pressed == []
+    bot.on_break = False
+    await bot.process(state)
+    assert pressed == [7]
