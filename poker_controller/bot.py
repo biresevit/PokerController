@@ -28,6 +28,10 @@ class Bot:
         self.manual_hand: int | None = None
         self.control=control
         self.action_lock=asyncio.Lock()
+        # Set while the scheduler takes the seat away on purpose; the bot must then stay away.
+        self.leaving=False
+        self.sit_out_requested=False
+        self.last_return=0.0
 
     async def process(self, state: dict):
         async with self.action_lock:
@@ -37,6 +41,9 @@ class Bot:
         hero = self.client.hero_seat(state)
         if hero is None:
             return
+        if state["s"][hero].get("f", 0) & 1:
+            self.sit_out_requested = False
+            await self.return_if_unintended(state)
         hs = self.mapper.convert(state, self.client.tables.get(self.table_id, {}))
         if hs is None:
             return
@@ -103,6 +110,26 @@ class Bot:
         await self.client.play(self.table_id, action, funds)
         self.actions += 1
         log.info("Hand %s: PDecision %s -> EvenBet action=%s funds=%s", state["gi"], decision, action, funds)
+
+    async def return_if_unintended(self, state: dict):
+        """Press "I'm back" after the table sat the hero out, e.g. after a timed-out turn.
+
+        Leaving the table is an intentional break, and under manual control the human decides.
+        """
+        if self.leaving or time.monotonic() - self.last_return < 10:
+            return
+        self.last_return = time.monotonic()
+        try:
+            if self.control and await self.control.manual_enabled():
+                return
+            latest = self.client.states.get(self.table_id, state)
+            hero = self.client.hero_seat(latest)
+            if hero is None or not latest["s"][hero].get("f", 0) & 1:
+                return
+            await self.client.sit_back(self.table_id)
+            log.info("Hero was sitting out at table %s; pressed I'm back", self.table_id)
+        except Exception:
+            log.exception("Could not return from sitting out at table %s", self.table_id)
 
     async def run(self, seconds: float = 120):
         await self.decisions.health()

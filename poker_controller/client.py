@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import time
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -35,6 +36,8 @@ class EvenBetClient:
         self.tables: dict[int, dict] = {}
         self.states: dict[int, dict] = {}
         self.state_versions: dict[int, int] = {}
+        # When each table's latest GameState arrived; its clock fields count down from then.
+        self.state_times: dict[int, float] = {}
         self.table_entry_indices: dict[int, int] = {}
         self.table_select_indices: dict[int, int] = {}
         self.changed = asyncio.Event()
@@ -66,6 +69,7 @@ class EvenBetClient:
                 table_id = state["ti"]
                 self.states[table_id] = copy.deepcopy(state)
                 self.state_versions[table_id] = self.state_versions.get(table_id, 0) + 1
+                self.state_times[table_id] = time.time()
                 self.changed.set()
         elif topic == "GoToTable" and "info" in message:
             info = message["info"]
@@ -153,6 +157,14 @@ class EvenBetClient:
     async def return_from_away(self, table_id: int):
         return await self.connection.request("ReturnFromAway", tableId=table_id,
                                              playerEntryIdx=self.player_entry_idx(table_id))
+
+    async def sit_out_next_hand(self, table_id: int):
+        return await self.player_command(table_id, 47)
+
+    async def sit_back(self, table_id: int):
+        """Press "I'm back" and take part in the next hand, as when attaching to a seat."""
+        await self.return_from_away(table_id)
+        await self.player_command(table_id, 10)
 
     def hero_seat(self, state: dict) -> int | None:
         return next((i for i, seat in enumerate(state.get("s", []))
