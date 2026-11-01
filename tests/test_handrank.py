@@ -38,3 +38,28 @@ def test_omaha_must_use_exactly_two_hole_cards():
 ])
 def test_show_reason(game, hole, board, expected):
     assert show_reason(game, hole.split(), board.split()) == expected
+
+
+@pytest.mark.parametrize("game,hole,board,hand", [
+    (72, "9d 8c", "7h 6s 5c", "straight"),
+    (72, "ah 2h", "9h 7h 4h", "flush"),
+    (72, "qd qc", "qh 7s 7c", "full house"),
+    (72, "7d 7c", "7h 7s 2c", "quads"),
+    (72, "9h 8h", "7h 6h 5h", "straight flush"),
+    (79, "9d 8c 2s 2d", "7h 6s 5c", "straight"),
+    (79, "ah 2h ks qd", "9h 7h 4h", "flush"),
+    (79, "qd qc 3s 4d", "qh 7s 7c", "full house"),
+    (79, "7d 7c 3s 4d", "7h 7s 2c", "quads"),
+    (79, "9h 8h 2c 3d", "7h 6h 5h", "straight flush"),
+])
+def test_straights_flushes_full_houses_and_quads_are_strong(game, hole, board, hand):
+    assert show_reason(game, hole.split(), board.split()) == "strong"
+
+
+@pytest.mark.parametrize("hole,board", [
+    ("2c 3d", "ah kh qh jh 9h"),   # the flush is entirely on the board
+    ("2c 3d", "9d tc jh qs kc"),   # so is the straight
+    ("2c 3d", "kd kc kh 7s 7c"),   # and the full house
+])
+def test_nlh_hand_made_only_by_the_board_is_not_strong(hole, board):
+    assert show_reason(72, hole.split(), board.split()) != "strong"
