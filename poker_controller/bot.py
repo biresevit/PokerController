@@ -13,7 +13,8 @@ log = logging.getLogger(__name__)
 
 class Bot:
     def __init__(self, client: EvenBetClient, decisions: PDecision, table_id: int, *,
-                 platform=11, hand_history=False, max_actions: int | None = None, control=None, on_bust=None):
+                 platform=11, hand_history=False, max_actions: int | None = None, control=None, on_bust=None,
+                 on_show_offer=None):
         if client.player_id is None:
             raise RuntimeError("Log in before creating a bot")
         self.client, self.decisions, self.table_id = client, decisions, table_id
@@ -37,6 +38,9 @@ class Bot:
         self.busted=False
         # Set while the account takes a planned break; the bot must stay away until it ends.
         self.on_break=False
+        # Called once per hand when the table lets the hero show cards after an uncontested win.
+        self.on_show_offer=on_show_offer
+        self.show_offer_hand=None
 
     async def process(self, state: dict):
         async with self.action_lock:
@@ -57,6 +61,10 @@ class Bot:
         if seat.get("f", 0) & 1 and not self.busted:
             self.sit_out_requested = False
             await self.return_if_unintended(state)
+        if (self.on_show_offer and state.get("m", {}).get("ai") == hero and 10 in state.get("aa", [])
+                and self.show_offer_hand != state.get("gi")):
+            self.show_offer_hand = state.get("gi")
+            self.on_show_offer(self.table_id, state, hero)
         hs = self.mapper.convert(state, self.client.tables.get(self.table_id, {}))
         if hs is None:
             return

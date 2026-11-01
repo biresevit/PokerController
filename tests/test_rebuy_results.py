@@ -137,3 +137,18 @@ async def test_bot_stays_away_during_a_planned_break():
     bot.on_break = False
     await bot.process(state)
     assert pressed == [7]
+
+
+async def test_bot_reports_a_show_offer_once_per_hand():
+    bot, state, busts = bot_at(9000)
+    offers = []
+    bot.on_show_offer = lambda tid, s, hero: offers.append((tid, s["gi"], hero))
+    state.update(ts=2, aa=[10, 16])
+    state["m"].update(ai=0, r=5)
+    await bot.process(state)
+    await bot.process(state)
+    assert offers == [(7, 5, 0)]
+    state["m"]["ai"] = 1  # Offered to the other player: not ours.
+    state["gi"] = 6
+    await bot.process(state)
+    assert offers == [(7, 5, 0)]
