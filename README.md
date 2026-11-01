@@ -1,6 +1,7 @@
 # PokerController
 
 **Deploying:** see `../PokerBackoffice/docs/deploy.md`, section 7 (PC release).
+
 Standalone Python EvenBet controller. It uses WebSockets for the poker server and
 REST for PDecision. It has no HopperV2, .NET, SQL, Azure, or browser dependency.
 
