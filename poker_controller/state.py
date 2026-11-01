@@ -129,14 +129,19 @@ class HandStateMapper:
             base = self.payout_bases[hand_key]
             winnings = [max(0, (state["s"][i] or {}).get("c", 0) - base[i]) / 100
                         for i in order]
+        # Tournament tables carry their format and standings (set by the worker from tournament messages):
+        # PDecision's tournament strategy needs players left/total and paid places. Ring tables: TableType 1.
+        tournament = table.get("tournament") or {}
+        table_type = {"SNG": 2, "MTT": 3}.get(tournament.get("format"), 1)
+        ante = tournament.get("ante")
         return {
             "TableID": str(table_id), "TableName": table.get("n", str(table_id)), "TableHandle": 0,
             "HandID": str(hand_id), "IsNewHand": is_new,
             "IsMyTurn": turn_key(state, hero) is not None,
-            "Platform": self.platform, "GameType": {72: 2, 79: 4, 88: 5}[game], "TableType": 1,
+            "Platform": self.platform, "GameType": {72: 2, 79: 4, 88: 5}[game], "TableType": table_type,
             "BBSize": state.get("bbv", table.get("bb", 0)) / 100,
             "SBSize": state.get("sbv", table.get("s", 0)) / 100,
-            "Ante": table.get("an", 0) / max(state.get("bbv", 1), 1), "Straddle": 0,
+            "Ante": (ante if ante is not None else table.get("an", 0)) / max(state.get("bbv", 1), 1), "Straddle": 0,
             "DealerID": (dealer - hero) % n, "Names": names, "OriginalNames": list(names),
             "EmptySeats": [i not in self.dealt[table_id] for i in order],
             "InGame": [bool(s and s.get("d")) for s in rotated],
@@ -145,7 +150,8 @@ class HandStateMapper:
             "Cards": hole[:2] + board + [""] * (5 - len(board)),
             "OmahaCards": hole[:hole_count] if hole_count > 2 else [], "Showdowns": showdowns,
             "Winners": winnings, "IsWinners": [w > 0 for w in winnings],
-            "PlayersLeft": 0, "PlayersTotal": 0, "NumPlacesPaid": 0,
+            "PlayersLeft": int(tournament.get("players_left") or 0), "PlayersTotal": int(tournament.get("players_total") or 0),
+            "NumPlacesPaid": int(tournament.get("places_paid") or 0),
         }
 
 

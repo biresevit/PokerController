@@ -146,6 +146,11 @@ class EvenBetClient:
             self.tables.setdefault(table["i"], {}).update(table)
         return [self.tables[t["i"]].copy() for t in tables]
 
+    async def list_tournaments(self) -> list[dict]:
+        """Every tournament in the lobby (SNG and MTT), including running and finished ones."""
+        reply = await self.connection.request("GetTournamentsList", tournamentType=-1)
+        return reply.get("tournaments") or []
+
     async def join(self, table_id: int, password: str = "") -> dict:
         entry_idx=self.table_select_indices.get(table_id,0)
         if table_id in self.table_select_indices:
