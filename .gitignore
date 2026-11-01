@@ -12,3 +12,6 @@ updater/obj/
 
 updater/**/bin/
 updater/**/obj/
+
+# Setup bundle built from the updater agent and prerequisites (see docs/rolling-updates.md)
+updater/setup/agent.zip
