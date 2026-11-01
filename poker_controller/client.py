@@ -62,6 +62,9 @@ class EvenBetClient:
         # The latest finished hand per table: who won which pot, with what.
         self.results: dict[int, dict] = {}
         self.table_entry_indices: dict[int, int] = {}
+        # Tournament tables use the tournament's player entry index (from TournamentSeatedDown, 0 for a first
+        # entry) for every request; the seat's "ei" in TableState is something else there.
+        self.tournament_entry_indices: dict[int, int] = {}
         self.table_select_indices: dict[int, int] = {}
         self.changed = asyncio.Event()
         self.auth = ""
@@ -111,6 +114,8 @@ class EvenBetClient:
                 self.table_entry_indices[int(table_id)] = int(seat["ei"])
 
     def player_entry_idx(self, table_id: int) -> int:
+        if table_id in self.tournament_entry_indices:
+            return self.tournament_entry_indices[table_id]
         return self.table_entry_indices.get(table_id, 0)
 
     async def open(self, *, login: bool = True):
@@ -152,7 +157,7 @@ class EvenBetClient:
         return reply.get("tournaments") or []
 
     async def join(self, table_id: int, password: str = "") -> dict:
-        entry_idx=self.table_select_indices.get(table_id,0)
+        entry_idx=self.tournament_entry_indices.get(table_id,self.table_select_indices.get(table_id,0))
         if table_id in self.table_select_indices:
             await self.connection.request("GetTableState", tableId=table_id,
                                           playerEntryIdx=entry_idx, isRealTable=False)
@@ -239,6 +244,22 @@ class EvenBetClient:
             except Exception:
                 pass
             raise
+        return seat
+
+    async def take_tournament_seat(self, table_id: int) -> int | None:
+        """Claim the seat a tournament already gave us, as EvenBet's web client does on opening the table.
+
+        Until this SitDown (no chips; auto-muck and hide-win-auto-action commands) the connection only
+        watches: hole cards stay hidden and the hero is auto-folded as sitting out.
+        """
+        state = await self.wait_state(table_id)
+        seat = self.hero_seat(state)
+        if seat is None:
+            return None
+        await self.connection.request("SitDown", tableId=table_id, playerEntryIdx=self.player_entry_idx(table_id),
+            seatIdx=seat, cash=0, playerCommands=[12, 3], acceptedExchangeRate=0, acceptedPrecision=0, entryCnt=1,
+            password="", paymentClubId=0, returnAfterLeaveWithoutCalculation=False, srcCurrencyId=0,
+            useCurrencyConversion=False)
         return seat
 
     async def rebuy(self, table_id: int, chips: str | float | Decimal, *, wait_big_blind: bool = False) -> int:
