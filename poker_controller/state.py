@@ -172,6 +172,10 @@ def decision_to_play(decision: dict, state: dict, hero: int) -> tuple[int, int]:
     # server still requires a call. Never turn that check into a paid action.
     if kind == 2 and 2 not in legal and 1 in legal:
         return 1, 0
+    # And the reverse: a CALL when there is nothing to call (e.g. the big blind in an unraised
+    # tournament pot) is the free check, never an illegal call.
+    if kind == 1 and 3 not in legal and 2 in legal:
+        return 2, 0
     # A short all-in may not reopen betting. Ignore ancillary commands (e.g. 15).
     if kind == 4 and set(legal) & {1, 2, 3, 8, 9} == {1, 3}:
         kind = 1

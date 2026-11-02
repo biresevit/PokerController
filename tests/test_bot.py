@@ -235,3 +235,22 @@ async def test_hand_with_a_manual_turn_stays_manual_until_next_hand(state):
     c.states[state["ti"]] = next_hand
     await bot.process(next_hand)
     assert played == [(state["ti"], 3, 100)]
+
+
+async def test_unplayable_decision_takes_the_safe_action_and_keeps_the_bot_running(state):
+    # A raise to less than the current bet cannot be played; the table worker must not stop on it.
+    c = EvenBetClient()
+    c.player_id = 73582719
+    c.states[state["ti"]] = state
+    played = []
+    async def play(*args):
+        played.append(args)
+    c.play = play
+    class BadRaise(FakeDecisions):
+        async def decide(self, frame):
+            self.frames.append(frame)
+            return {"Action": 4, "BetSize": 0}
+    bot = Bot(c, BadRaise(), state["ti"])
+    await bot.process(state)
+    assert played == [(state["ti"], 1, 0)]
+    assert bot.actions == 1

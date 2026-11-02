@@ -166,3 +166,10 @@ def test_sitout_preserves_roster_and_fold_updates_in_game(state):
         assert after[field] == before[field]
     assert not after["InGame"][3]
     assert mapper.turn_key(state, 2) != key
+
+
+def test_call_with_nothing_to_call_is_the_free_check(state):
+    # The big blind in an unraised tournament pot: PDecision says CALL, EvenBet offers fold/check/raise.
+    blind = copy.deepcopy(state)
+    blind["aa"] = [1, 2, 9, 15]
+    assert decision_to_play({"Action": 1, "BetSize": 2}, blind, 2) == (2, 0)

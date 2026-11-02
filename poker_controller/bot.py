@@ -121,7 +121,14 @@ class Bot:
         if decision.get("Action") == 2 and 2 not in latest.get("aa", []) and 1 in latest.get("aa", []):
             log.error("PDecision returned CHECK for table %s hand %s, but legal actions are %s; folding",
                       self.table_id, state["gi"], latest.get("aa", []))
-        action, funds = decision_to_play(decision, latest, hero)
+        try:
+            action, funds = decision_to_play(decision, latest, hero)
+        except ValueError as exc:
+            # One unplayable answer must not stop the table worker: the bot would then time out
+            # every following hand (and a tournament bot can never leave). Take the safe action.
+            log.error("Cannot play PDecision %s for table %s hand %s (%s); taking a free check or folding",
+                      decision, self.table_id, state["gi"], exc)
+            action, funds = decision_to_play({"Action": 6}, latest, hero)
         if self.control:
             if not await self.control.claim_auto(key):return
             latest=self.client.states[self.table_id]
