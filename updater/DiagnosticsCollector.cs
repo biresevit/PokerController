@@ -106,7 +106,13 @@ static class DiagnosticsCollector {
      remaining-=used;manifest.Add(new{file=file.Name,original_bytes=original,included_bytes=used,truncated=offset>0,modified_utc=File.GetLastWriteTimeUtc(file.Path)});
     }catch{manifest.Add(new{file=file.Name,skipped="File unavailable"});}
    }
-   var summary=new{machine_id=c.MachineId,site_id=c.SiteId,hostname=Environment.MachineName,os=Environment.OSVersion.ToString(),collector_version=Version,captured_utc=DateTime.UtcNow,hours,
+   object? applications=null;
+   try{
+    var active=JsonSerializer.Deserialize<Apps>(File.ReadAllText(Path.Combine(c.Root,"active.json")),Json)!;
+    string? decisionVersion=null;try{decisionVersion=FileVersionInfo.GetVersionInfo(Safe(active.DecisionExe,c.Root)).FileVersion;}catch{}
+    applications=new{installed_release_id=active.ReleaseId,pdecision_version=decisionVersion,decision_pid=active.DecisionPid,worker_pid=active.WorkerPid};
+   }catch{}
+   var summary=new{machine_id=c.MachineId,site_id=c.SiteId,hostname=Environment.MachineName,os=Environment.OSVersion.ToString(),collector_version=Version,applications,captured_utc=DateTime.UtcNow,hours,
     selection="Recent files modified within the requested hours; bounded tails, up to 8 MiB per file and 48 MiB total. No settings or enrollment files included.",files=manifest};
    using var summaryWriter=new StreamWriter(zip.CreateEntry("manifest.json").Open());summaryWriter.Write(JsonSerializer.Serialize(summary,new JsonSerializerOptions{WriteIndented=true}));
   }
