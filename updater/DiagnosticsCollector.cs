@@ -16,14 +16,14 @@ static class DiagnosticsCollector {
  static readonly HttpClient Api=new(){Timeout=TimeSpan.FromSeconds(90)};
  static async Task<T> Post<T>(Config c,string action,object body){
   using var req=new HttpRequestMessage(HttpMethod.Post,$"{c.BaseUrl.TrimEnd('/')}/api/updater/{c.MachineId}/{action}");
-  req.Headers.Add("X-Updater-Token",c.Token);req.Content=JsonContent.Create(body,options:Json);
+  req.Headers.Add("X-Updater-Token",c.Token);req.Content=new StringContent(JsonSerializer.Serialize(body,Json),Encoding.UTF8,"application/json");
   using var response=await Api.SendAsync(req);response.EnsureSuccessStatusCode();return (await response.Content.ReadFromJsonAsync<T>(Json))!;
  }
  internal static async Task Run(Config c,int? parent=null){
   using var owner=parent.HasValue?Process.GetProcessById(parent.Value):null;
   while(owner==null||!owner.HasExited){
    try{await Once(c);}catch(Exception error){
-    try{File.AppendAllText(Path.Combine(c.Root,"diagnostics.log"),$"{DateTime.UtcNow:O} Collection retry: {error.GetType().Name}\n");}catch{}
+    try{File.AppendAllText(Path.Combine(c.Root,"diagnostics.log"),$"{DateTime.UtcNow:O} Collection retry: {error.GetType().Name}"+(error is HttpRequestException http?$" HTTP {(int?)http.StatusCode}":"")+"\n");}catch{}
    }
    await Task.Delay(10000);
   }
