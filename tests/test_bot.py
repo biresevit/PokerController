@@ -57,6 +57,15 @@ async def test_tournament_bot_sends_native_handstate_and_correct_raise(state,for
     c.play.assert_awaited_once_with(state['ti'],9,500)
 
 
+async def test_table_detachment_while_deciding_prevents_old_table_action(state):
+    from unittest.mock import AsyncMock
+    c=EvenBetClient();c.player_id=73582719;c.states[state['ti']]=state;c.play=AsyncMock()
+    decisions=FakeDecisions();bot=Bot(c,decisions,state['ti'])
+    decisions.after=lambda:setattr(bot,'table_detached',True)
+    await bot.process(state)
+    c.play.assert_not_awaited()
+
+
 async def test_bot_discards_decision_when_turn_changes_during_http(state):
     c = EvenBetClient()
     c.player_id = 73582719

@@ -31,6 +31,7 @@ class Bot:
         self.action_lock=asyncio.Lock()
         # Set while the scheduler takes the seat away on purpose; the bot must then stay away.
         self.leaving=False
+        self.table_detached=False
         self.sit_out_requested=False
         self.last_return=0.0
         # Called once each time the hero loses the whole stack; the owner rebuys or leaves.
@@ -47,6 +48,7 @@ class Bot:
             await self._process(state)
 
     async def _process(self, state: dict):
+        if self.table_detached:return
         hero = self.client.hero_seat(state)
         if hero is None:
             return
@@ -114,6 +116,7 @@ class Bot:
         decision = await self.decisions.decide(hs)
         self.decision_hand = state["gi"]
         latest = self.client.states[self.table_id]
+        if self.table_detached:return
         latest_hero = self.client.hero_seat(latest)
         if latest_hero != hero or self.mapper.turn_key(latest, hero) != key:
             log.warning("Discarding stale decision for hand %s", state["gi"])
@@ -134,7 +137,7 @@ class Bot:
         if self.control:
             if not await self.control.claim_auto(key):return
             latest=self.client.states[self.table_id]
-            if self.client.hero_seat(latest)!=hero or self.mapper.turn_key(latest,hero)!=key:return
+            if self.table_detached or self.client.hero_seat(latest)!=hero or self.mapper.turn_key(latest,hero)!=key:return
         # Record before sending: an ambiguous timeout must never cause a repeated monetary action.
         self.submitted.add(key)
         await self.client.play(self.table_id, action, funds)
