@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 from .transport import Connection, ProtocolError
+from .state import amount_scale
 
 
 @dataclass(frozen=True)
@@ -28,7 +29,7 @@ def to_funds(chips: str | float | Decimal) -> int:
     return int(amount)
 
 
-def hand_results(events: list) -> list[dict]:
+def hand_results(events: list, *, scale: int = 100) -> list[dict]:
     """Read the table's own "X wins (Y) with Z" announcements (animation event type 15)."""
     results = []
     for event in events or []:
@@ -41,7 +42,7 @@ def hand_results(events: list) -> list[dict]:
         combination = re.search(r"<combination[^>]*>(.*?)</combination>", text)
         results.append({"seat": int(seat.group(1)) if seat else event.get("s"),
                         "name": html.unescape(name.group(1)) if name else "",
-                        "amount": int(amount.group(1)) / 100 if amount else None,
+                        "amount": int(amount.group(1)) / scale if amount else None,
                         "hand": html.unescape(combination.group(1)) if combination else None,
                         "text": " ".join(html.unescape(re.sub(r"<[^>]+>", "", text)).split())})
     return results
@@ -97,7 +98,7 @@ class EvenBetClient:
                 self.states[table_id] = copy.deepcopy(state)
                 self.state_versions[table_id] = self.state_versions.get(table_id, 0) + 1
                 self.state_times[table_id] = time.time()
-                won = hand_results(message.get("events"))
+                won = hand_results(message.get("events"), scale=amount_scale(self.tables.get(table_id, {})))
                 if won:
                     previous = self.results.get(table_id)
                     if previous and previous["hand_id"] == state.get("gi"):

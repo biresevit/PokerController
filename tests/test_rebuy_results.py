@@ -37,6 +37,13 @@ def test_client_keeps_every_pot_of_the_latest_hand():
     assert c.results[7] == {"hand_id": 2, "winners": hand_results(NOT_SHOWN)}
 
 
+def test_tournament_result_announcements_keep_native_chip_amounts():
+    c=EvenBetClient();c.tables[7]={'tournament':{'format':'SNG'}}
+    c._on_message({'t':'GameState','gameState':{'ti':7,'gi':1,'s':[]},'events':SHOWDOWN})
+    assert c.results[7]['winners'][0]['amount']==1007
+    assert hand_results(SHOWDOWN)[0]['amount']==10.07
+
+
 class Busts:
     def __init__(self):
         self.tables = []

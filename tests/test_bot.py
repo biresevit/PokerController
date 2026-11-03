@@ -43,6 +43,20 @@ async def test_bot_submits_one_action_for_duplicate_snapshots(state):
     assert decisions.frames[0]["IsNewHand"]
 
 
+@pytest.mark.parametrize('format',['SNG','MTT'])
+async def test_tournament_bot_sends_native_handstate_and_correct_raise(state,format):
+    from unittest.mock import AsyncMock
+    c=EvenBetClient();c.player_id=73582719
+    c.states[state['ti']]=state
+    c.tables[state['ti']]={'tournament':{'format':format}}
+    c.play=AsyncMock()
+    decisions=type('Decisions',(),{'decide':AsyncMock(return_value={'Action':4,'BetSize':600})})()
+    await Bot(c,decisions,state['ti']).process(state)
+    sent=decisions.decide.await_args.args[0]
+    assert sent['BBSize']==state['bbv'] and sent['Stacks'][0]==state['s'][2]['c']
+    c.play.assert_awaited_once_with(state['ti'],9,500)
+
+
 async def test_bot_discards_decision_when_turn_changes_during_http(state):
     c = EvenBetClient()
     c.player_id = 73582719

@@ -59,6 +59,40 @@ def test_raise_to_becomes_additional_funds(state):
     assert decision_to_play({"Action": 0}, state, 2) == (1, 0)
 
 
+@pytest.mark.parametrize('format', ['SNG','MTT'])
+def test_tournament_handstate_uses_native_chips_and_tracks_blind_levels(state,format):
+    mapper=HandStateMapper(73582719,'monica')
+    state['d']['p']=750
+    table={'tournament':{'format':format,'ante':20}}
+    hs=mapper.convert(state,table)
+    assert hs['BBSize']==state['bbv'] and hs['SBSize']==state['sbv']
+    assert hs['Stacks'][0]==state['s'][2]['c']
+    assert hs['Bets'][0]==state['s'][2]['b']
+    assert hs['Pot']==state['d']['p']
+    assert hs['Ante']==20/state['bbv'] # Ante is a fraction of BB in the API contract.
+    level2=copy.deepcopy(state);level2['gi']+=1
+    level2['bbv']*=2;level2['sbv']*=2
+    next_hand=mapper.convert(level2,table)
+    assert next_hand['BBSize']==level2['bbv'] and next_hand['SBSize']==level2['sbv']
+
+
+def test_tournament_hand_history_payouts_are_native_chips(state):
+    mapper=HandStateMapper(73582719,'monica')
+    table={'tournament':{'format':'SNG'}}
+    mapper.convert(state,table)
+    settled=copy.deepcopy(state);settled['ts']=3
+    settled['s'][2]['c']+=350
+    assert mapper.convert(settled,table)['Winners'][0]==350
+
+
+def test_native_tournament_raise_is_not_multiplied_by_100(state):
+    assert decision_to_play({'Action':4,'BetSize':600},state,2,scale=1)==(9,500)
+    assert decision_to_play({'Action':1},state,2,scale=1)==(3,100)
+    assert decision_to_play({'Action':0},state,2,scale=1)==(1,0)
+    # Identical protocol action for the equivalent cash-sized amount.
+    assert decision_to_play({'Action':4,'BetSize':6},state,2)==(9,500)
+
+
 def test_short_stack_call(state):
     state["s"][2]["c"] = 30
     assert decision_to_play({"Action": 1}, state, 2) == (3, 30)

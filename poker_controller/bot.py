@@ -6,7 +6,7 @@ import time
 
 from .client import EvenBetClient
 from .decision import PDecision
-from .state import HandStateMapper, decision_to_play
+from .state import HandStateMapper, amount_scale, decision_to_play
 
 log = logging.getLogger(__name__)
 
@@ -65,7 +65,9 @@ class Bot:
                 and self.show_offer_hand != state.get("gi")):
             self.show_offer_hand = state.get("gi")
             self.on_show_offer(self.table_id, state, hero)
-        hs = self.mapper.convert(state, self.client.tables.get(self.table_id, {}))
+        table = self.client.tables.get(self.table_id, {})
+        scale = amount_scale(table)
+        hs = self.mapper.convert(state, table)
         if hs is None:
             return
         if self.hand_history:
@@ -122,13 +124,13 @@ class Bot:
             log.error("PDecision returned CHECK for table %s hand %s, but legal actions are %s; folding",
                       self.table_id, state["gi"], latest.get("aa", []))
         try:
-            action, funds = decision_to_play(decision, latest, hero)
+            action, funds = decision_to_play(decision, latest, hero, scale=scale)
         except ValueError as exc:
             # One unplayable answer must not stop the table worker: the bot would then time out
             # every following hand (and a tournament bot can never leave). Take the safe action.
             log.error("Cannot play PDecision %s for table %s hand %s (%s); taking a free check or folding",
                       decision, self.table_id, state["gi"], exc)
-            action, funds = decision_to_play({"Action": 6}, latest, hero)
+            action, funds = decision_to_play({"Action": 6}, latest, hero, scale=scale)
         if self.control:
             if not await self.control.claim_auto(key):return
             latest=self.client.states[self.table_id]

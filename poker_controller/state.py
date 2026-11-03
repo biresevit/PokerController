@@ -7,6 +7,11 @@ import json
 from decimal import Decimal, ROUND_HALF_UP
 
 
+def amount_scale(table: dict) -> int:
+    """Protocol units per HandState unit: cash cents, or native tournament chips."""
+    return 1 if (table.get('tournament') or {}).get('format') in ('SNG', 'MTT') else 100
+
+
 def card(code: int | str) -> str:
     code = int(code)
     if code == -1:
@@ -111,8 +116,9 @@ class HandStateMapper:
         board = cards(state.get("d", {}).get("c"))
         if len(board) > 5:
             raise ValueError("Multiple boards are unsupported")
+        scale = amount_scale(table)
         def amount(s, key):
-            return (s or {}).get(key, 0) / 100
+            return (s or {}).get(key, 0) / scale
         def name(s):
             return (s.get("dn") or s.get("n", "")) if s and not s.get("f", 0) & 128 else ""
         names = [name(s) for s in rotated]
@@ -127,7 +133,7 @@ class HandStateMapper:
         winnings = [0] * n
         if state.get("ts") == 3 and hand_key in self.payout_bases:
             base = self.payout_bases[hand_key]
-            winnings = [max(0, (state["s"][i] or {}).get("c", 0) - base[i]) / 100
+            winnings = [max(0, (state["s"][i] or {}).get("c", 0) - base[i]) / scale
                         for i in order]
         # Tournament tables carry their format and standings (set by the worker from tournament messages):
         # PDecision's tournament strategy needs players left/total and paid places. Ring tables: TableType 1.
@@ -139,14 +145,14 @@ class HandStateMapper:
             "HandID": str(hand_id), "IsNewHand": is_new,
             "IsMyTurn": turn_key(state, hero) is not None,
             "Platform": self.platform, "GameType": {72: 2, 79: 4, 88: 5}[game], "TableType": table_type,
-            "BBSize": state.get("bbv", table.get("bb", 0)) / 100,
-            "SBSize": state.get("sbv", table.get("s", 0)) / 100,
+            "BBSize": state.get("bbv", table.get("bb", 0)) / scale,
+            "SBSize": state.get("sbv", table.get("s", 0)) / scale,
             "Ante": (ante if ante is not None else table.get("an", 0)) / max(state.get("bbv", 1), 1), "Straddle": 0,
             "DealerID": (dealer - hero) % n, "Names": names, "OriginalNames": list(names),
             "EmptySeats": [i not in self.dealt[table_id] for i in order],
             "InGame": [bool(s and s.get("d")) for s in rotated],
             "Stacks": [amount(s, "c") for s in rotated], "Bets": [amount(s, "b") for s in rotated],
-            "Pot": state.get("d", {}).get("p", 0) / 100,
+            "Pot": state.get("d", {}).get("p", 0) / scale,
             "Cards": hole[:2] + board + [""] * (5 - len(board)),
             "OmahaCards": hole[:hole_count] if hole_count > 2 else [], "Showdowns": showdowns,
             "Winners": winnings, "IsWinners": [w > 0 for w in winnings],
@@ -155,8 +161,8 @@ class HandStateMapper:
         }
 
 
-def decision_to_play(decision: dict, state: dict, hero: int) -> tuple[int, int]:
-    """Decision.BetSize is raise-to in chips; EvenBet funds is additional minor units."""
+def decision_to_play(decision: dict, state: dict, hero: int, *, scale: int = 100) -> tuple[int, int]:
+    """Convert a raise-to amount to additional protocol units using the input hand's scale."""
     kind = decision.get("Action")
     if kind == 6:  # PDecision could not produce a strategy action.
         legal = state.get("aa", [])
@@ -188,7 +194,7 @@ def decision_to_play(decision: dict, state: dict, hero: int) -> tuple[int, int]:
     stack = state["s"][hero].get("c", 0)
     if kind == 1:
         return action, min(funds.get("c", 0), stack)
-    target = Decimal(str(decision["BetSize"])) * 100
+    target = Decimal(str(decision["BetSize"])) * scale
     if not target.is_finite():
         raise ValueError("Non-finite bet size")
     additional = int(target.quantize(Decimal("1"), rounding=ROUND_HALF_UP)) - state["s"][hero].get("b", 0)
