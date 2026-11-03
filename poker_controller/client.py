@@ -55,6 +55,7 @@ class EvenBetClient:
         self.connection.listeners.append(self._on_message)
         self.player_id: int | None = None
         self.tables: dict[int, dict] = {}
+        self.tournaments: dict[int, dict] = {}
         self.states: dict[int, dict] = {}
         self.state_versions: dict[int, int] = {}
         # When each table's latest GameState arrived; its clock fields count down from then.
@@ -154,7 +155,21 @@ class EvenBetClient:
     async def list_tournaments(self) -> list[dict]:
         """Every tournament in the lobby (SNG and MTT), including running and finished ones."""
         reply = await self.connection.request("GetTournamentsList", tournamentType=-1)
-        return reply.get("tournaments") or []
+        rows = reply.get("tournaments")
+        if not isinstance(rows, list):
+            raise ValueError('Tournament lobby response did not contain a tournament list')
+        # As with GetTablesList, later rows can contain only i, np or s. An ID
+        # alone confirms an unchanged row; it must keep its name/type/game/buy-in.
+        # The response still enumerates the current inventory, so absent IDs
+        # must not be retained or later republished as freshly observed.
+        current = {}
+        for row in rows:
+            if row.get('i') is None:
+                continue
+            tid = int(row['i'])
+            current[tid] = {**self.tournaments.get(tid, {}), **row}
+        self.tournaments = current
+        return [row.copy() for row in current.values()]
 
     async def join(self, table_id: int, password: str = "") -> dict:
         entry_idx=self.tournament_entry_indices.get(table_id,self.table_select_indices.get(table_id,0))

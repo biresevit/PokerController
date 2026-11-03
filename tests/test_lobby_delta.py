@@ -21,6 +21,36 @@ async def test_lobby_partial_rows_preserve_game_stakes_and_names():
 
 
 @pytest.mark.asyncio
+async def test_tournament_inventory_merges_partial_rows_and_unchanged_ids():
+    sng={'i':42,'n':'Sandstorm','tt':71,'g':72,'p':85,'s':71,'b':100,'np':2,'mx':6}
+    mtt={'i':43,'n':'Daily MTT','tt':83,'g':72,'p':85,'s':71,'b':200,'np':5,'mx':100}
+    connection=SimpleNamespace(listeners=[],request=AsyncMock(side_effect=[
+        {'tournaments':[sng,mtt]},
+        {'tournaments':[{'i':42,'np':4},{'i':43}]},
+        {'tournaments':[{'i':42,'s':82}]},
+        {'tournaments':[]}]))
+    client=EvenBetClient(connection=connection)
+    await client.list_tournaments()
+    rows=await client.list_tournaments()
+    assert rows==[{**sng,'np':4},mtt]
+    rows[0]['n']='A caller must not change cached metadata'
+    assert (await client.list_tournaments())==[{**sng,'np':4,'s':82}]
+    assert 43 not in client.tournaments # Removed from the server's inventory.
+    assert await client.list_tournaments()==[] and not client.tournaments
+
+
+@pytest.mark.asyncio
+async def test_failed_tournament_response_does_not_clear_confirmed_metadata():
+    connection=SimpleNamespace(listeners=[],request=AsyncMock(side_effect=[
+        {'tournaments':[{'i':42,'n':'Sandstorm'}]}, {}]))
+    client=EvenBetClient(connection=connection)
+    await client.list_tournaments()
+    with pytest.raises(ValueError,match='tournament list'):
+        await client.list_tournaments()
+    assert client.tournaments=={42:{'i':42,'n':'Sandstorm'}}
+
+
+@pytest.mark.asyncio
 async def test_existing_seat_uses_entry_index_from_player_tables():
     connection=SimpleNamespace(listeners=[],request=AsyncMock(side_effect=[
         {'tables':[{'i':42}],'playerEntryIdxs':[3]}, {}, {}, {}, {}]))
