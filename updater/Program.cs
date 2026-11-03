@@ -59,8 +59,8 @@ static class Program {
    var health=await response.Content.ReadFromJsonAsync<JsonElement>();return health.GetProperty("status").GetString()=="ready";
   }catch{return false;}
  }
- static async Task<Poll> Poll()=>await Request<Poll>("poll",new{instance_id=Instance,agent_version="1.0.13",apps_running=await RuntimeHealthy(),needs_install=!File.Exists(StateFile)&&!File.Exists(OperationFile)});
- static Task<JsonElement> Report(Job job,string phase,string detail="",Manifest? manifest=null)=>Request<JsonElement>("report",new{instance_id=Instance,agent_version="1.0.13",task_id=job.Id,phase,detail,pdecision_version=manifest?.PdecisionVersion,controller_version=manifest?.ControllerVersion});
+ static async Task<Poll> Poll()=>await Request<Poll>("poll",new{instance_id=Instance,agent_version="1.0.14",apps_running=await RuntimeHealthy(),needs_install=!File.Exists(StateFile)&&!File.Exists(OperationFile)});
+ static Task<JsonElement> Report(Job job,string phase,string detail="",Manifest? manifest=null)=>Request<JsonElement>("report",new{instance_id=Instance,agent_version="1.0.14",task_id=job.Id,phase,detail,pdecision_version=manifest?.PdecisionVersion,controller_version=manifest?.ControllerVersion});
  static Manifest Verify(Job job){
   byte[] bytes=Encoding.UTF8.GetBytes(job.Manifest),signature=Convert.FromBase64String(job.Signature);
   bool valid=false;foreach(var key in C.TrustedKeys){using var rsa=RSA.Create();rsa.ImportFromPem(key);if(rsa.VerifyData(bytes,signature,HashAlgorithmName.SHA256,RSASignaturePadding.Pss)){valid=true;break;}}
@@ -282,14 +282,20 @@ static class Program {
   }
  }
  static async Task Main(string[] args){
+  if(args.Contains("--diagnostics-self-test")){DiagnosticsCollector.SelfTest();return;}
   if(args.Length==2&&args[0]=="--startup-probe"){await Task.Delay(250);File.WriteAllText(args[1],"ready");return;}
   if(args.Contains("--self-test")){SelfTest();return;}
   var configIndex=Array.IndexOf(args,"--config");if(configIndex<0||configIndex+1>=args.Length)return;
   C=Read<Config>(args[configIndex+1]);Directory.CreateDirectory(C.Root);
   if(!PokerSuite.Shared.Utilities.MachineNetworkIdentity.Matches(C.ExpectedMac,PokerSuite.Shared.Utilities.MachineNetworkIdentity.GetMacAddresses())){Log("Enrollment does not match a network adapter on this PC.");return;}
   if(new Uri(C.BaseUrl).Scheme!="https"&&!new Uri(C.BaseUrl).IsLoopback)throw new InvalidDataException("Updater API must use HTTPS.");
+  if(args.Contains("--diagnostics-only")){
+   var parentIndex=Array.IndexOf(args,"--parent");
+   await DiagnosticsCollector.Run(C,parentIndex>=0?int.Parse(args[parentIndex+1]):null);return;
+  }
   using var mutex=new Mutex(true,$"Local\\PokerSuiteUpdater-{C.MachineId}",out var owner);if(!owner)return;
   Log("Updater started.");
+  _=Task.Run(()=>DiagnosticsCollector.Run(C));
   // Heartbeats remain independent of downloads, graceful stops and startup.
   _=Task.Run(async()=>{while(true){try{await Poll();}catch{}await Task.Delay(10000);}});
   var nextStart=DateTime.MinValue;

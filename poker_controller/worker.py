@@ -27,15 +27,19 @@ def main() -> None:
     if (output / "stop").exists():
         parser.error("Choose a fresh output directory; this one has a stop marker")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
-        handlers=[logging.FileHandler(output / "worker.log", encoding="utf-8"), logging.StreamHandler()])
+        handlers=[logging.FileHandler(output / "worker.log", encoding="utf-8"), logging.StreamHandler()],force=True)
     for name in ("httpx", "httpcore", "websockets"):
         logging.getLogger(name).setLevel(logging.WARNING)
+    from poker_controller.diagnostics import start_collector
+    collector=start_collector(args.machine_id)
     settings = SimpleNamespace(controller_version=POKER_CONTROLLER_VERSION,site_id=args.site_id,machine_id=args.machine_id,seconds=0, seed=args.seed, output=str(output), target=0,
         leave_on_exit=args.leave_on_exit, telemetry_provider=machine_metrics)
     try:
         asyncio.run(Pilot(settings).run_cloud_worker())
     except KeyboardInterrupt:
         logging.getLogger(__name__).info("PokerController worker stopped by operator")
+    finally:
+        if collector and collector.poll() is None:collector.terminate()
 
 
 if __name__ == "__main__":
