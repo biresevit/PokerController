@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import httpx
 
+from .sites import EVENBET, HAND_HISTORY
+
 
 class PDecision:
     def __init__(self, url="http://127.0.0.1:5005", api_key="", client: httpx.AsyncClient | None = None):
@@ -16,13 +18,18 @@ class PDecision:
             raise RuntimeError(f"PDecision isn't ready: {body}")
         return body
 
-    async def require_evenbet_hand_history(self) -> dict:
+    async def require_hand_history(self, platform: int = EVENBET) -> dict:
+        """PDecision must save this platform's hands under its own casino and platform, uploaded to Azure."""
+        casino, names = HAND_HISTORY[platform]
         body = await self.health()
-        if body.get("handHistoryCasino") != "Evenbet" or body.get("handHistoryPlatform") != "EvenBet":
-            raise RuntimeError("PDecision hand-history destination must be casino Evenbet and platform EvenBet")
+        if body.get("handHistoryCasino") != casino or body.get("handHistoryPlatform") not in names:
+            raise RuntimeError(f"PDecision hand-history destination must be casino {casino} and platform {names[0]}")
         if not body.get("handHistoryUploadToAzure"):
             raise RuntimeError("PDecision hand-history Azure upload is disabled")
         return body
+
+    async def require_evenbet_hand_history(self) -> dict:
+        return await self.require_hand_history(EVENBET)
 
     async def decide(self, hand_state: dict) -> dict:
         response = await self.http.post("/api/decision", json=hand_state)

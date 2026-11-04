@@ -4,7 +4,7 @@ import asyncio
 import logging
 import time
 
-from .client import EvenBetClient
+from .client import EvenBetClient  # or BluffPokerClient: the same interface
 from .decision import PDecision
 from .state import HandStateMapper, amount_scale, decision_to_play
 
@@ -13,12 +13,13 @@ log = logging.getLogger(__name__)
 
 class Bot:
     def __init__(self, client: EvenBetClient, decisions: PDecision, table_id: int, *,
-                 platform=11, hand_history=False, max_actions: int | None = None, control=None, on_bust=None,
+                 platform=None, hand_history=False, max_actions: int | None = None, control=None, on_bust=None,
                  on_show_offer=None):
         if client.player_id is None:
             raise RuntimeError("Log in before creating a bot")
         self.client, self.decisions, self.table_id = client, decisions, table_id
-        self.mapper = HandStateMapper(client.player_id, client.settings.username, platform)
+        self.mapper = HandStateMapper(client.player_id, client.settings.username,
+                                      platform if platform is not None else getattr(client, "platform", 11))
         self.hand_history, self.max_actions = hand_history, max_actions
         self.history_hand: int | None = None
         self.history_frames: list[dict] = []

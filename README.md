@@ -49,6 +49,35 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m poker_controller.import_profiles C:\Users\bires\Downloads\NICKNAME-PROFILE-500-20261025.csv --apply
 ```
 
+### BluffPoker
+
+BluffPoker (enPlatform `BluffPokerPlatform` = 18) is played over its hub REST API and one engine WebSocket
+per table (`bluffpoker.py`, ported from BluffPoker's player connector). `BluffPokerClient` has the same
+interface as `EvenBetClient` and translates each table state into the EvenBet snapshot shape, so the bot,
+HandState mapping, manual control, rebuys, breaks and hand histories are shared.
+
+Credentials stay on the PC in `C:\PokerSuiteluffpoker.json` (or the file named by `BLUFFPOKER_CONFIG`),
+never in the database or the repository:
+
+```json
+{"hub_url": "https://hub.bluffpoker.club", "api_key": "<client API key>", "origin": "https://bluffpoker.club",
+ "accounts": {"guido66": {"email": "<login>", "password": "<password>"}}}
+```
+
+`BP_HUB_BASE_URL`, `BP_CLIENT_API_KEY`, `BP_ORIGIN` and `BP_CLIENT_IP` override the file; a scheduler site's
+`EndpointUrl` overrides the hub URL.
+
+```powershell
+python -m poker_controller tables --site bluffpoker --username guido66
+python -m poker_controller play --site bluffpoker --username guido66 --table <table id> --buy-in 100 --seconds 300
+```
+
+The hub allows 30 logins per 15 minutes per IP and 10 failed logins per account; sessions reuse their token
+(refreshed before it expires). A rejoin refused with `REJOIN_MIN_NOT_MET` is repeated once with exactly the
+stack the bot left with (`rejoin.required`). Seat payments carry an idempotency key, so an unconfirmed payment
+is asked again with the same key and never paid twice; game actions are never resent. Tournaments, chat and
+showing cards are not supported on BluffPoker yet.
+
 ### Azure-scheduled worker
 
 The Azure Function plans commands every 30 seconds. This PC only runs PDecision
@@ -150,7 +179,9 @@ Avoid running two live controllers with the same account simultaneously.
 | Module | Responsibility |
 |---|---|
 | `transport.py` | TLS WebSocket, one receive loop, request correlation, notifications, redaction |
-| `client.py` | Session and table/seat/buy-in operations |
+| `client.py` | EvenBet session and table/seat/buy-in operations |
+| `bluffpoker.py` | BluffPoker hub API, engine table sockets, state translation, same interface as `client.py` |
+| `sites.py` | Platforms (enPlatform), client per platform, table ids |
 | `state.py` | Protocol-to-HandState conversion and action amounts |
 | `decision.py` | PDecision REST adapter |
 | `bot.py` | Turn processing and duplicate/stale decision checks |
