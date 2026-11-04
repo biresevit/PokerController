@@ -401,18 +401,42 @@ def _rows(data, *names) -> list:
 
 # ---------------------------------------------------------------- hub
 
-class Hub:
-    """The hub's REST API for one account: one access/refresh pair, refreshed single-flight before it expires."""
+class Credential:
+    """One account's access/refresh pair, shared by every Hub of that account in this process."""
 
-    def __init__(self, settings: BluffPokerSettings, http: httpx.AsyncClient | None = None, clock=time.monotonic):
-        self.settings, self.clock = settings, clock
-        self.http = http or httpx.AsyncClient(base_url=settings.hub_url, timeout=settings.request_timeout)
+    def __init__(self):
         self.access: str | None = None
         self.refresh_token: str | None = None
         self.expires = 0.0
         self.player_id: str | None = None
         self.failed: str | None = None
         self.lock = asyncio.Lock()
+
+
+# The hub allows 30 logins per 15 minutes per IP: sessions of an account (lobby scans, plays, reconnects) reuse
+# its pair and refresh it, they do not log in again.
+CREDENTIALS: dict[tuple[str, str], Credential] = {}
+
+
+class Hub:
+    """The hub's REST API for one account: one access/refresh pair, refreshed single-flight before it expires."""
+
+    def __init__(self, settings: BluffPokerSettings, http: httpx.AsyncClient | None = None, clock=time.monotonic):
+        self.settings, self.clock = settings, clock
+        self.http = http or httpx.AsyncClient(base_url=settings.hub_url, timeout=settings.request_timeout)
+        self.credential = CREDENTIALS.setdefault((settings.hub_url, (settings.email or settings.username).casefold()),
+                                                 Credential())
+
+    def __getattr__(self, name):
+        if name in ("access", "refresh_token", "expires", "player_id", "failed", "lock"):
+            return getattr(self.__dict__["credential"], name)
+        raise AttributeError(name)
+
+    def __setattr__(self, name, value):
+        if name in ("access", "refresh_token", "expires", "player_id", "failed"):
+            setattr(self.credential, name, value)
+        else:
+            super().__setattr__(name, value)
 
     def headers(self, bearer=None, idempotency=None):
         h = {"x-api-key": self.settings.api_key, "Origin": self.settings.origin}
@@ -457,6 +481,9 @@ class Hub:
         self.access, self.refresh_token, self.expires = access, refresh, self.clock() + float(expires_in)
 
     async def login(self):
+        """Log in, or reuse the account's pair while it is valid (it is refreshed before it expires)."""
+        if self.access and not self.failed and self.expires - self.clock() > REFRESH_AHEAD_SECONDS:
+            return {"clientUserId": self.player_id, "reused": True}
         s = self.settings
         if not s.email or not s.password:
             raise BluffPokerError("CREDENTIALS_NOT_CONFIGURED", topic="login", terminal=True)
@@ -504,14 +531,6 @@ class Hub:
             if error.status != 401:
                 raise
         return await self.call(method, path, bearer=await self.refresh(token), **kw)
-
-    async def logout(self):
-        if not self.access:
-            return None
-        try:
-            return await self.call("POST", "/auth/logout", body={"token": self.access}, topic="logout")
-        finally:
-            self.access = self.refresh_token = None
 
     async def tables(self):
         return await self.call("GET", "/integrations/clients/tables", topic="tables")
@@ -1202,22 +1221,13 @@ class BluffPokerClient:
 
     # -- lifecycle
 
-    def seated(self) -> bool:
-        return any(self.hero_seat(state) is not None for state in self.states.values())
-
     async def close(self):
-        """Close every table socket. Logs out only without a seat: the hub's logout releases the account's seats,
-        and a reconnecting session (or a worker restart) must keep them."""
+        """Close every table socket. No logout: it would release the account's seats (a reconnecting session or a
+        restarted worker keeps them) and discard the token the account's next session reuses."""
         sockets, self.sockets = list(self.sockets.values()), {}
         for sock in sockets:
             await sock.close()
-        try:
-            if self.hub.access and not self.seated():
-                await self.hub.logout()
-        except Exception as exc:
-            log.warning("BluffPoker logout not confirmed for %s: %s", self.settings.username, exc)
-        finally:
-            await self.hub.close()
+        await self.hub.close()
 
     async def __aenter__(self):
         try:

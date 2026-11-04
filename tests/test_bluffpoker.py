@@ -16,6 +16,13 @@ PID = DATA["player_id"]
 TABLE = "3b355673-ab0e-44f8-92cc-88021c2b03b8"
 
 
+@pytest.fixture(autouse=True)
+def fresh_credentials():
+    bp.CREDENTIALS.clear()
+    yield
+    bp.CREDENTIALS.clear()
+
+
 def settings(**changes):
     values = dict(hub_url="https://hub.test", api_key="key", origin="https://site.test", username="guido66",
                   email="guido66@bots.test", password="secret")
@@ -285,3 +292,16 @@ async def test_pdecision_must_save_bluffpoker_hands_as_bluffpoker():
         health("Evenbet", "EvenBet"))))
     with pytest.raises(RuntimeError, match="BluffPokerPlatform"):
         await wrong.require_hand_history(BLUFFPOKER)
+
+
+async def test_sessions_of_one_account_reuse_its_token_instead_of_logging_in_again():
+    logins = []
+
+    def handler(request):
+        logins.append(request.url.path)
+        return httpx.Response(200, json={"pokerToken": "a1", "refreshToken": "r1", "expiresIn": 3600, "clientUserId": PID})
+    first = hub_with(handler)
+    await first.login()
+    second = hub_with(handler)  # e.g. the next lobby scan of the same account
+    await second.login()
+    assert logins == ["/integrations/clients/auth/login"] and second.player_id == PID and await second.token() == "a1"
