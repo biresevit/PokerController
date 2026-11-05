@@ -104,7 +104,13 @@ class Bot:
         if self.mapper.turn_key(self.client.states[self.table_id], hero) != key:
             return
         if self.control:
-            manual,command=await self.control.offer(key)
+            try:
+                manual,command=await self.control.offer(key)
+            except Exception as exc:
+                # The manual-control check needs the database; while it is unreachable nobody can take the
+                # table over either, so the bot plays the turn instead of stopping the table worker.
+                log.warning("Manual control check failed at table %s (%s); playing automatically", self.table_id, exc)
+                manual,command=False,None
             if manual:
                 self.manual_hand=state["gi"]
                 if command:await self.control.play(self,self.client.states[self.table_id],hero,key,command)
@@ -136,7 +142,12 @@ class Bot:
                       decision, self.table_id, state["gi"], exc)
             action, funds = decision_to_play({"Action": 6}, latest, hero, scale=scale)
         if self.control:
-            if not await self.control.claim_auto(key):return
+            try:
+                claimed=await self.control.claim_auto(key)
+            except Exception as exc:
+                log.warning("Turn claim failed at table %s (%s); playing automatically", self.table_id, exc)
+                claimed=True
+            if not claimed:return
             latest=self.client.states[self.table_id]
             if self.table_detached or self.client.hero_seat(latest)!=hero or self.mapper.turn_key(latest,hero)!=key:return
         # Record before sending: an ambiguous timeout must never cause a repeated monetary action.

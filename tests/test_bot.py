@@ -277,3 +277,15 @@ async def test_unplayable_decision_takes_the_safe_action_and_keeps_the_bot_runni
     await bot.process(state)
     assert played == [(state["ti"], 1, 0)]
     assert bot.actions == 1
+
+
+async def test_bot_plays_when_the_manual_control_database_is_unreachable(state):
+    from unittest.mock import AsyncMock
+    c = EvenBetClient()
+    c.player_id = 73582719
+    c.states[state["ti"]] = state
+    c.play = AsyncMock()
+    control = type("Control", (), {"offer": AsyncMock(side_effect=OSError("database timeout")),
+                                    "claim_auto": AsyncMock(side_effect=OSError("database timeout"))})()
+    await Bot(c, FakeDecisions(), state["ti"], control=control).process(state)
+    c.play.assert_awaited_once_with(state["ti"], 3, 100)
