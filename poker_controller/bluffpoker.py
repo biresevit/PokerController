@@ -1168,6 +1168,14 @@ class BluffPokerClient:
             await sock.close()
             self.states.pop(key, None)
 
+    async def forget_table(self, table_id):
+        """Close a table's socket without leaving its seat (a tournament moved the account, or it is out)."""
+        key = table_key(table_id)
+        sock = self.sockets.pop(key, None)
+        self.states.pop(key, None)
+        if sock:
+            await sock.close()
+
     async def play(self, table_id, action: int, funds: int = 0):
         """Send an EvenBet action (1 fold, 2 check, 3 call, 8 bet, 9 raise + additional chips) as BluffPoker's
         fold/check/call/raise-to/allin. Never resent; an unanswered action is logged as ambiguous."""
