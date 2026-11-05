@@ -31,11 +31,15 @@ def table_key(value) -> int | str:
     return int(text) if text.isdigit() else text
 
 
-def create_client(platform: int, username: str, *, endpoint_url: str | None = None):
-    """A logged-out client for one bot account on the given platform."""
+def create_client(platform: int, username: str, *, endpoint_url: str | None = None,
+                  email: str | None = None, password: str | None = None):
+    """A logged-out client for one bot account on the given platform.
+
+    email/password: the account's login stored with it in the database (imported in the backoffice); when set
+    they are used instead of the ones in the PC's config file."""
     if platform == BLUFFPOKER:
         from .bluffpoker import BluffPokerClient, BluffPokerSettings
-        return BluffPokerClient(BluffPokerSettings.load(username, hub_url=endpoint_url))
+        return BluffPokerClient(BluffPokerSettings.load(username, hub_url=endpoint_url, email=email, password=password))
     if platform == EVENBET:
         from .client import EvenBetClient, Settings
         return EvenBetClient(Settings(username=username))

@@ -121,8 +121,12 @@ class BluffPokerSettings:
 
     @classmethod
     def load(cls, username: str, *, hub_url: str | None = None, path: str | Path | None = None,
-             environ: dict | None = None) -> "BluffPokerSettings":
+             environ: dict | None = None, email: str | None = None,
+             password: str | None = None) -> "BluffPokerSettings":
         """Settings for `username` from the config file, with environment overrides for the site-wide values.
+
+        `email` and `password` (the login stored with the account in the database) win over the file's account
+        entry when both are given; the file then needs only the site-wide values.
 
         File (default C:\\PokerSuite\\bluffpoker.json, or BLUFFPOKER_CONFIG):
             {"hub_url": "...", "api_key": "...", "origin": "https://...", "client_ip": null,
@@ -147,6 +151,8 @@ class BluffPokerSettings:
         missing = [k for k in ("hub_url", "api_key", "origin") if not values[k]]
         if missing:
             raise ValueError(f"BluffPoker {', '.join(missing)} not configured: set them in {config} or the environment")
+        if email and password:
+            account = {"email": email, "password": password}
         return cls(username=username, email=account.get("email") or "", password=account.get("password") or "",
                    request_timeout=float(timeout_ms) / 1000 if timeout_ms else float(data.get("request_timeout") or 15),
                    allow_static_credential=bool(data.get("allow_static_credential")), **values)

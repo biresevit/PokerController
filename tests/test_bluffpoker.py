@@ -267,6 +267,12 @@ def test_settings_come_from_the_config_file_with_environment_overrides(tmp_path)
     assert "pw" not in repr(s) and "env-key" not in repr(s)
     with pytest.raises(ValueError, match="api_key"):
         bp.BluffPokerSettings.load("guido66", path=tmp_path / "missing.json", environ={})
+    # the login stored with the account in the database wins over the file's; accounts need no file entry then
+    s = bp.BluffPokerSettings.load("guido66", path=path, environ={}, email="db@test", password="db-pw")
+    assert (s.email, s.password) == ("db@test", "db-pw")
+    s = bp.BluffPokerSettings.load("newbot", path=path, environ={}, email="new@test", password="new-pw")
+    assert (s.email, s.password) == ("new@test", "new-pw")
+    assert bp.BluffPokerSettings.load("guido66", path=path, environ={}, email=None, password=None).email == "g@test"
 
 
 def test_platforms_and_table_keys():
