@@ -938,10 +938,17 @@ class BluffPokerClient:
         return True
 
     def table_lost(self, sock: TableSocket, exc: Exception):
-        if self.sockets.get(sock.key) is sock:
-            self.sockets.pop(sock.key, None)
-            log.warning("BluffPoker table connection lost: %s (%s)", sock.wire, exc)
-            self.connection.fail(exc)
+        if self.sockets.get(sock.key) is not sock:
+            return
+        self.sockets.pop(sock.key, None)
+        if self.hero_seat(self.states.get(sock.key, {})) is None:
+            # A table only watched (lobby scan): forget it, the next join opens it again. Reconnecting the
+            # account would interrupt its seated tables for nothing.
+            self.states.pop(sock.key, None)
+            log.info("BluffPoker watched table connection closed: %s (%s)", sock.wire, exc)
+            return
+        log.warning("BluffPoker table connection lost: %s (%s)", sock.wire, exc)
+        self.connection.fail(exc)
 
     def hero_seat(self, state: dict) -> int | None:
         return next((i for i, seat in enumerate(state.get("s", []))

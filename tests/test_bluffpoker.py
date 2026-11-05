@@ -305,3 +305,16 @@ async def test_sessions_of_one_account_reuse_its_token_instead_of_logging_in_aga
     second = hub_with(handler)  # e.g. the next lobby scan of the same account
     await second.login()
     assert logins == ["/integrations/clients/auth/login"] and second.player_id == PID and await second.token() == "a1"
+
+
+def test_losing_a_watched_table_does_not_reconnect_the_account():
+    c = client_at("preflop_turn")  # seated at TABLE
+    watched = "6ab84bec-ddf7-4f60-a11a-9502d1e13ef0"
+    c.states[watched] = state("preflop_turn") | {"s": [None] * 6}
+    seated_sock, watched_sock = c.sockets[TABLE], bp.TableSocket(c, watched, watched)
+    c.sockets[watched] = watched_sock
+    c.table_lost(watched_sock, ConnectionError("closed"))
+    assert watched not in c.sockets and watched not in c.states and c.connection.failure is None
+    c.sockets[TABLE] = seated_sock = bp.TableSocket(c, TABLE, TABLE)
+    c.table_lost(seated_sock, ConnectionError("closed"))
+    assert isinstance(c.connection.failure, ConnectionError)  # a seated table: the session reconnects
