@@ -401,6 +401,8 @@ def _rows(data, *names) -> list:
 
 # ---------------------------------------------------------------- hub
 
+TOURNAMENT_PAGE = 100
+
 class Credential:
     """One account's access/refresh pair, shared by every Hub of that account in this process."""
 
@@ -585,7 +587,18 @@ class Hub:
         return await self.authed("GET", "/player/account/summary", topic="summary")
 
     async def tournaments(self):
-        return await self.authed("GET", "/player/tournaments", topic="tournaments")
+        """Every tournament: the hub pages its list, 20 by default, oldest first (take/skip)."""
+        rows, total = [], None
+        while total is None or len(rows) < total:
+            page = await self.authed("GET", f"/player/tournaments?take={TOURNAMENT_PAGE}&skip={len(rows)}", topic="tournaments")
+            if not isinstance(page, dict):
+                return page
+            batch = page.get("tournaments") or []
+            rows.extend(batch)
+            total = int(page.get("total") or 0)
+            if not batch:
+                break
+        return {"tournaments": rows, "total": total}
 
     async def tournament(self, tournament_id):
         return await self.authed("GET", f"/player/tournaments/{quote(str(tournament_id), safe='')}", topic="tournament")

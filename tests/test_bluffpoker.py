@@ -344,3 +344,21 @@ async def test_forgotten_table_is_no_longer_known():
     c.sockets[TABLE] = bp.TableSocket(c, TABLE, TABLE)
     await c.forget_table(TABLE)
     assert TABLE not in c.tables and TABLE not in c.states and TABLE not in c.sockets
+
+
+async def test_tournament_list_reads_every_page_of_the_hub():
+    # The hub returns 20 tournaments, oldest first, unless asked for more: today's SNGs were on later pages.
+    tournaments = [{"id": str(i), "type": "MTT", "status": "FINISHED"} for i in range(230)]
+    pages = []
+
+    def handler(request):
+        if request.url.path.endswith("/login"):
+            return httpx.Response(200, json={"pokerToken": "a1", "refreshToken": "r1", "expiresIn": 3600, "clientUserId": PID})
+        take, skip = int(request.url.params["take"]), int(request.url.params["skip"])
+        pages.append((take, skip))
+        return httpx.Response(200, json={"tournaments": tournaments[skip:skip + take], "total": len(tournaments)})
+    hub = hub_with(handler)
+    await hub.login()
+    listed = await hub.tournaments()
+    assert [t["id"] for t in listed["tournaments"]] == [t["id"] for t in tournaments]
+    assert pages == [(100, 0), (100, 100), (100, 200)]
