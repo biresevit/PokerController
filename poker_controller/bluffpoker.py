@@ -923,13 +923,15 @@ class BluffPokerClient:
         info = self.tables.setdefault(sock.key, {"i": sock.key, "wire": sock.wire, "n": sock.wire})
         if not info.get("mp"):
             info["mp"] = len(state["s"])
-        info.setdefault("g", state["gt"])
-        info.setdefault("p", LIMITS.get(state["bp"]["game"], 80))
-        info.setdefault("bb", state["bbv"])
-        info.setdefault("s", state["sbv"])
         info["an"] = state["bp"]["ante"]
         if state["bp"]["tournament"]:
+            # No ring fields (g, p, bb): the lobby scan must never take a tournament table for a ring table.
             info.setdefault("tournament", {"format": "SNG"})
+        else:
+            info.setdefault("g", state["gt"])
+            info.setdefault("p", LIMITS.get(state["bp"]["game"], 80))
+            info.setdefault("bb", state["bbv"])
+            info.setdefault("s", state["sbv"])
         self.states[sock.key] = state
         self.state_versions[sock.key] = self.state_versions.get(sock.key, 0) + 1
         self.state_times[sock.key] = time.time()
@@ -1173,6 +1175,7 @@ class BluffPokerClient:
         key = table_key(table_id)
         sock = self.sockets.pop(key, None)
         self.states.pop(key, None)
+        self.tables.pop(key, None)
         if sock:
             await sock.close()
 

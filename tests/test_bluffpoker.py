@@ -318,3 +318,20 @@ def test_losing_a_watched_table_does_not_reconnect_the_account():
     c.sockets[TABLE] = seated_sock = bp.TableSocket(c, TABLE, TABLE)
     c.table_lost(seated_sock, ConnectionError("closed"))
     assert isinstance(c.connection.failure, ConnectionError)  # a seated table: the session reconnects
+
+
+def test_tournament_tables_never_look_like_ring_tables():
+    raw = copy.deepcopy(DATA["states"]["preflop_turn"])
+    raw["tournamentMeta"] = {"ante": 0}
+    c = bp.BluffPokerClient(settings())
+    c.player_id = PID
+    sock = bp.TableSocket(c, TABLE, TABLE)
+    assert c.on_table_state(sock, raw)
+    assert "g" not in c.tables[TABLE] and c.tables[TABLE]["tournament"]["format"] == "SNG"
+
+
+async def test_forgotten_table_is_no_longer_known():
+    c = client_at("preflop_turn")
+    c.sockets[TABLE] = bp.TableSocket(c, TABLE, TABLE)
+    await c.forget_table(TABLE)
+    assert TABLE not in c.tables and TABLE not in c.states and TABLE not in c.sockets
