@@ -294,6 +294,15 @@ async def test_pdecision_must_save_bluffpoker_hands_as_bluffpoker():
         await wrong.require_hand_history(BLUFFPOKER)
 
 
+async def test_one_pdecision_serves_the_hands_of_every_site_of_its_pc():
+    body = {"status": "ready", "handHistoryCasino": "Evenbet", "handHistoryPlatform": "EvenBet", "handHistoryUploadToAzure": True,
+            "casinos": [{"casino": "Evenbet", "platform": "EvenBet"}, {"casino": "BluffPoker", "platform": "BluffPokerPlatform"}]}
+    both = PDecision(client=httpx.AsyncClient(base_url="http://pd", transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, json=body))))
+    assert await both.require_hand_history(BLUFFPOKER)
+    assert await both.require_hand_history(EVENBET)
+
+
 async def test_sessions_of_one_account_reuse_its_token_instead_of_logging_in_again():
     logins = []
 

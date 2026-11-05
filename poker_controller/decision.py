@@ -22,7 +22,9 @@ class PDecision:
         """PDecision must save this platform's hands under its own casino and platform, uploaded to Azure."""
         casino, names = HAND_HISTORY[platform]
         body = await self.health()
-        if body.get("handHistoryCasino") != casino or body.get("handHistoryPlatform") not in names:
+        # A PDecision serving several poker sites lists them all; an older one reports its only casino.
+        served = body.get("casinos") or [{"casino": body.get("handHistoryCasino"), "platform": body.get("handHistoryPlatform")}]
+        if not any(c.get("casino") == casino and c.get("platform") in names for c in served):
             raise RuntimeError(f"PDecision hand-history destination must be casino {casino} and platform {names[0]}")
         if not body.get("handHistoryUploadToAzure"):
             raise RuntimeError("PDecision hand-history Azure upload is disabled")

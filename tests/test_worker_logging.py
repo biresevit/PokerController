@@ -9,8 +9,11 @@ from types import SimpleNamespace
 logging.basicConfig(level=logging.WARNING)
 class Pilot:
  def __init__(self,settings):pass
- async def run_cloud_worker(self):logging.getLogger('seat-events').info('Connection lost; diagnostic logging works')
+ async def run_cloud_worker(self):
+  logging.getLogger('seat-events').info('Connection lost; diagnostic logging works')
+  open(sys.argv[2]+'/stop','w').close()
 sys.modules['schedule_controller.pilot']=SimpleNamespace(Pilot=Pilot)
+sys.modules['schedule_controller.pilot_repository']=SimpleNamespace(machine_sites=lambda machine:[1])
 sys.argv=['worker','--output',sys.argv[1]]
 from poker_controller.worker import main
 main()
