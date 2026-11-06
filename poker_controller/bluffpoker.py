@@ -122,11 +122,13 @@ class BluffPokerSettings:
     @classmethod
     def load(cls, username: str, *, hub_url: str | None = None, path: str | Path | None = None,
              environ: dict | None = None, email: str | None = None,
-             password: str | None = None) -> "BluffPokerSettings":
+             password: str | None = None, api_key: str | None = None,
+             origin: str | None = None) -> "BluffPokerSettings":
         """Settings for `username` from the config file, with environment overrides for the site-wide values.
 
         `email` and `password` (the login stored with the account in the database) win over the file's account
-        entry when both are given; the file then needs only the site-wide values.
+        entry when both are given. `api_key` and `origin` (stored with the site) win over the file and the
+        environment, so a PC with everything in the database needs no config file at all.
 
         File (default C:\\PokerSuite\\bluffpoker.json, or BLUFFPOKER_CONFIG):
             {"hub_url": "...", "api_key": "...", "origin": "https://...", "client_ip": null,
@@ -144,8 +146,8 @@ class BluffPokerSettings:
         timeout_ms = env.get("BP_REQUEST_TIMEOUT_MS")
         values = {
             "hub_url": hub_url or env.get("BP_HUB_BASE_URL") or data.get("hub_url"),
-            "api_key": env.get("BP_CLIENT_API_KEY") or data.get("api_key"),
-            "origin": env.get("BP_ORIGIN") or data.get("origin"),
+            "api_key": api_key or env.get("BP_CLIENT_API_KEY") or data.get("api_key"),
+            "origin": origin or env.get("BP_ORIGIN") or data.get("origin"),
             "client_ip": env.get("BP_CLIENT_IP") or data.get("client_ip") or None,
         }
         missing = [k for k in ("hub_url", "api_key", "origin") if not values[k]]

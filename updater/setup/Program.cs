@@ -41,7 +41,7 @@ class SetupForm:Form {
   Text="PokerSuite Setup and Status "+setupVersion;ClientSize=new Size(820,680);MinimumSize=new Size(760,600);Font=new Font("Segoe UI",10);StartPosition=FormStartPosition.CenterScreen;
   var layout=new FlowLayoutPanel{Dock=DockStyle.Fill,FlowDirection=FlowDirection.TopDown,WrapContents=false,Padding=new Padding(24),AutoScroll=true};Controls.Add(layout);
   layout.Controls.Add(new Label{Text="Install PokerSuite on this PC",Font=new Font(Font,FontStyle.Bold),AutoSize=true});
-  versionDetails.Text=$"Setup version: {setupVersion} | Bundled updater agent: 1.0.14\nInstalled updater agent: {InstalledAgentVersion()}";layout.Controls.Add(versionDetails);
+  versionDetails.Text=$"Setup version: {setupVersion} | Bundled updater agent: 1.0.15\nInstalled updater agent: {InstalledAgentVersion()}";layout.Controls.Add(versionDetails);
   var macs=Addresses();intro.Text=$"PC: {Environment.MachineName}\nNetwork adapters: {string.Join(", ",macs)}\n\nGet a pairing code and give it to your main administrator. Approve it in Backoffice > Updates. Keep this window open. No JSON files are required.";layout.Controls.Add(intro);
   layout.Controls.Add(pairing);layout.Controls.Add(installPrerequisites);layout.Controls.Add(restoreInstallation);layout.Controls.Add(start);layout.Controls.Add(status);
   layout.Controls.Add(enrollmentDetails);layout.Controls.Add(runtimeDetails);layout.Controls.Add(taskDetails);
@@ -68,9 +68,9 @@ class SetupForm:Form {
   var singleFile=Path.Combine(folder,"single-file-agent");Directory.CreateDirectory(singleFile);
   using(var payload=Assembly.GetExecutingAssembly().GetManifestResourceStream("PokerSuite.Setup.agent.zip")!)
   using(var zip=new ZipArchive(payload))zip.GetEntry("PokerSuite.Updater.exe")!.ExtractToFile(Path.Combine(singleFile,"PokerSuite.Updater.exe"));
-  if(!InstalledAgentVersion(singleFile).StartsWith("1.0.14")||File.Exists(Path.Combine(singleFile,"PokerSuite.Updater.dll")))throw new Exception("Single-file updater was not detected without a DLL");
+  if(!InstalledAgentVersion(singleFile).StartsWith("1.0.15")||File.Exists(Path.Combine(singleFile,"PokerSuite.Updater.dll")))throw new Exception("Single-file updater was not detected without a DLL");
   File.WriteAllText(Path.Combine(singleFile,"PokerSuite.Updater.dll"),"stale legacy sidecar");
-  if(!InstalledAgentVersion(singleFile).StartsWith("1.0.14"))throw new Exception("Stale DLL hid the installed executable version");
+  if(!InstalledAgentVersion(singleFile).StartsWith("1.0.15"))throw new Exception("Stale DLL hid the installed executable version");
   var agent=Path.Combine(folder,"agent");var identity=Path.Combine(folder,"identity");Directory.CreateDirectory(agent);Directory.CreateDirectory(identity);
   using(var device=RSA.Create(3072))SecretStore.Write(Path.Combine(identity,"device-key.protected"),device.ExportPkcs8PrivateKeyPem());
   File.WriteAllText(Path.Combine(identity,"request.json"),JsonSerializer.Serialize(new{id=Guid.NewGuid().ToString(),code="TESTDEVICE",expires=DateTimeOffset.UtcNow.AddDays(-2)}));
@@ -168,7 +168,7 @@ class SetupForm:Form {
    return field.EndsWith("heartbeat")&&DateTimeOffset.TryParse(item.ToString(),out var stamp)?stamp.ToLocalTime().ToString("g"):item.ToString();
   }
   var machine=value.GetProperty("machine_id").GetInt32();var site=value.GetProperty("site_id").GetInt32();
-  versionDetails.Text=$"Setup version: {Assembly.GetExecutingAssembly().GetName().Version!.ToString(3)} | Bundled updater agent: 1.0.14\nInstalled updater agent: {InstalledAgentVersion()} | Last connected agent: {Text("agent_version")}";
+  versionDetails.Text=$"Setup version: {Assembly.GetExecutingAssembly().GetName().Version!.ToString(3)} | Bundled updater agent: 1.0.15\nInstalled updater agent: {InstalledAgentVersion()} | Last connected agent: {Text("agent_version")}";
   enrollmentDetails.Text=$"Authentication: approved | Machine {machine} | Site {site}\nUpdater heartbeat: {Text("agent_heartbeat")}";
   var missing=Prerequisites();installPrerequisites.Visible=missing.Count>0;
   runtimeDetails.Text=missing.Count>0?"Runtime repair required: "+string.Join(", ",missing):"Windows runtimes: ready";

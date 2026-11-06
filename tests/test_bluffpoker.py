@@ -368,3 +368,9 @@ async def test_tournament_list_reads_every_page_of_the_hub():
     listed = await hub.tournaments()
     assert [t["id"] for t in listed["tournaments"]] == [t["id"] for t in tournaments]
     assert pages == [(100, 0), (100, 100), (100, 200)]
+
+
+def test_a_pc_without_a_config_file_uses_the_values_stored_with_the_site(tmp_path):
+    s = bp.BluffPokerSettings.load("newbot", hub_url="https://hub.test", path=tmp_path / "missing.json", environ={},
+                                   email="n@test", password="pw", api_key="site-key", origin="https://site.test")
+    assert (s.hub_url, s.api_key, s.origin, s.email) == ("https://hub.test", "site-key", "https://site.test", "n@test")

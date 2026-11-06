@@ -59,8 +59,8 @@ static class Program {
    var health=await response.Content.ReadFromJsonAsync<JsonElement>();return health.GetProperty("status").GetString()=="ready";
   }catch{return false;}
  }
- static async Task<Poll> Poll()=>await Request<Poll>("poll",new{instance_id=Instance,agent_version="1.0.14",apps_running=await RuntimeHealthy(),needs_install=!File.Exists(StateFile)&&!File.Exists(OperationFile)});
- static Task<JsonElement> Report(Job job,string phase,string detail="",Manifest? manifest=null)=>Request<JsonElement>("report",new{instance_id=Instance,agent_version="1.0.14",task_id=job.Id,phase,detail,pdecision_version=manifest?.PdecisionVersion,controller_version=manifest?.ControllerVersion});
+ static async Task<Poll> Poll()=>await Request<Poll>("poll",new{instance_id=Instance,agent_version="1.0.15",apps_running=await RuntimeHealthy(),needs_install=!File.Exists(StateFile)&&!File.Exists(OperationFile)});
+ static Task<JsonElement> Report(Job job,string phase,string detail="",Manifest? manifest=null)=>Request<JsonElement>("report",new{instance_id=Instance,agent_version="1.0.15",task_id=job.Id,phase,detail,pdecision_version=manifest?.PdecisionVersion,controller_version=manifest?.ControllerVersion});
  static Manifest Verify(Job job){
   byte[] bytes=Encoding.UTF8.GetBytes(job.Manifest),signature=Convert.FromBase64String(job.Signature);
   bool valid=false;foreach(var key in C.TrustedKeys){using var rsa=RSA.Create();rsa.ImportFromPem(key);if(rsa.VerifyData(bytes,signature,HashAlgorithmName.SHA256,RSASignaturePadding.Pss)){valid=true;break;}}
@@ -227,9 +227,11 @@ static class Program {
    Log("Update failed: "+error.Message);
    try{
     if(string.IsNullOrEmpty(previous.DecisionExe)){
-     await Stop(target);if(File.Exists(StateFile))File.Delete(StateFile);
-     await Report(job,"failed","Initial installation failed; no previous release exists. "+error.Message.Split('?')[0]);
-     File.Delete(OperationFile);return;
+     // A first installation has nothing to roll back to: the newest release stays installed and supervised,
+     // so it starts working as soon as its problem is fixed and a later release installs over it as usual.
+     File.Delete(OperationFile);
+     await Report(job,"failed","Installed, but not healthy yet: "+error.Message.Split('?')[0]+" The release stays installed and is restarted if it stops.");
+     Log("Initial installation kept installed; supervision continues.");return;
     }
     // Never install a second release over an unverified first attempt.
     await Stop(target);Save(StateFile,previous);await Start(previous);

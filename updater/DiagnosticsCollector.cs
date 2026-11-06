@@ -7,7 +7,7 @@ using System.Text.RegularExpressions;
 using System.Diagnostics;
 
 static class DiagnosticsCollector {
- internal const string Version="1.0.14";
+ internal const string Version="1.0.15";
  static readonly JsonSerializerOptions Json=new(JsonSerializerDefaults.Web);
  record Work(string Id,string Claim,int Hours,
   [property:System.Text.Json.Serialization.JsonPropertyName("upload_url")]string UploadUrl,

@@ -32,14 +32,17 @@ def table_key(value) -> int | str:
 
 
 def create_client(platform: int, username: str, *, endpoint_url: str | None = None,
-                  email: str | None = None, password: str | None = None):
+                  email: str | None = None, password: str | None = None,
+                  api_key: str | None = None, origin: str | None = None):
     """A logged-out client for one bot account on the given platform.
 
     email/password: the account's login stored with it in the database (imported in the backoffice); when set
-    they are used instead of the ones in the PC's config file."""
+    they are used instead of the ones in the PC's config file. api_key/origin: the site's BluffPoker client values,
+    stored with the site; when set they win over the config file and the environment."""
     if platform == BLUFFPOKER:
         from .bluffpoker import BluffPokerClient, BluffPokerSettings
-        return BluffPokerClient(BluffPokerSettings.load(username, hub_url=endpoint_url, email=email, password=password))
+        return BluffPokerClient(BluffPokerSettings.load(username, hub_url=endpoint_url, email=email, password=password,
+                                                       api_key=api_key, origin=origin))
     if platform == EVENBET:
         from .client import EvenBetClient, Settings
         return EvenBetClient(Settings(username=username))
