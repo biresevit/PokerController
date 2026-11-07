@@ -59,8 +59,8 @@ static class Program {
    var health=await response.Content.ReadFromJsonAsync<JsonElement>();return health.GetProperty("status").GetString()=="ready";
   }catch{return false;}
  }
- static async Task<Poll> Poll()=>await Request<Poll>("poll",new{instance_id=Instance,agent_version="1.0.15",apps_running=await RuntimeHealthy(),needs_install=!File.Exists(StateFile)&&!File.Exists(OperationFile)});
- static Task<JsonElement> Report(Job job,string phase,string detail="",Manifest? manifest=null)=>Request<JsonElement>("report",new{instance_id=Instance,agent_version="1.0.15",task_id=job.Id,phase,detail,pdecision_version=manifest?.PdecisionVersion,controller_version=manifest?.ControllerVersion});
+ static async Task<Poll> Poll()=>await Request<Poll>("poll",new{instance_id=Instance,agent_version="1.0.16",apps_running=await RuntimeHealthy(),needs_install=!File.Exists(StateFile)&&!File.Exists(OperationFile)});
+ static Task<JsonElement> Report(Job job,string phase,string detail="",Manifest? manifest=null)=>Request<JsonElement>("report",new{instance_id=Instance,agent_version="1.0.16",task_id=job.Id,phase,detail,pdecision_version=manifest?.PdecisionVersion,controller_version=manifest?.ControllerVersion});
  static Manifest Verify(Job job){
   byte[] bytes=Encoding.UTF8.GetBytes(job.Manifest),signature=Convert.FromBase64String(job.Signature);
   bool valid=false;foreach(var key in C.TrustedKeys){using var rsa=RSA.Create();rsa.ImportFromPem(key);if(rsa.VerifyData(bytes,signature,HashAlgorithmName.SHA256,RSASignaturePadding.Pss)){valid=true;break;}}
@@ -169,14 +169,23 @@ static class Program {
   }
   return Process.Start(info)??throw new InvalidOperationException("Application did not start.");
  }
- static void EnsureRunning(Process process,string name){if(process.HasExited)throw new InvalidOperationException($"{name} exited during startup (exit code {process.ExitCode}).");}
+ // A process reused from an earlier updater run (Owned) was not started by this object, so ExitCode throws.
+ static void EnsureRunning(Process process,string name){if(process.HasExited){string code;try{code=process.ExitCode.ToString();}catch{code="unknown";}throw new InvalidOperationException($"{name} exited during startup (exit code {code}).");}}
+ // "failed" is final in PDecision (health 503 with status "failed"); null for any other non-ready answer.
+ static async Task<string?> ReadFailedStartup(HttpResponseMessage response){
+  try{var json=await response.Content.ReadFromJsonAsync<JsonElement>();
+   if(json.TryGetProperty("status",out var status)&&status.GetString()=="failed")return json.TryGetProperty("error",out var e)?e.GetString()??"no reason given":"no reason given";}catch{}
+  return null;
+ }
  static async Task<string> DecisionHealth(Process decision,string? expected=null){
   using var client=new HttpClient{Timeout=TimeSpan.FromSeconds(3)};var deadline=DateTime.UtcNow.AddHours(2);int stable=0;string version="";
   Log("Waiting up to two hours for PDecision readiness; initial resource sync may take an hour. PokerController starts afterward.");
   while(DateTime.UtcNow<deadline){
-   EnsureRunning(decision,"PDecision");
+   EnsureRunning(decision,"PDecision");string? failed=null;
    try{using var r=await client.GetAsync(C.DecisionHealthUrl);if(r.IsSuccessStatusCode){var json=await r.Content.ReadFromJsonAsync<JsonElement>();version=json.GetProperty("version").GetString()!;
-     if(json.GetProperty("status").GetString()=="ready"&&(expected==null||version==expected)){if(++stable>=3)return version;}else stable=0;}else stable=0;}catch{stable=0;}
+     if(json.GetProperty("status").GetString()=="ready"&&(expected==null||version==expected)){if(++stable>=3)return version;}else stable=0;}
+    else{failed=await ReadFailedStartup(r);stable=0;}}catch{stable=0;}
+   if(failed!=null)throw new InvalidOperationException("PDecision reported a failed startup: "+failed);
    await Task.Delay(2000);
   }
   throw new TimeoutException("PDecision did not become healthy within two hours; check resource synchronization and the PDecision health response.");
@@ -185,7 +194,13 @@ static class Program {
   Directory.CreateDirectory(Path.Combine(C.Root,"runs"));
   var decision=Owned(apps.DecisionPid,apps.DecisionStarted,apps.DecisionExe);
   if(decision==null){decision=Launch(apps.DecisionExe,apps.DecisionCwd,[]);apps.DecisionPid=decision.Id;apps.DecisionStarted=decision.StartTime.ToUniversalTime().Ticks;Save(StateFile,apps);}
-  await DecisionHealth(decision,expected?.PdecisionVersion);
+  try{await DecisionHealth(decision,expected?.PdecisionVersion);}
+  catch(Exception error) when(error is TimeoutException or InvalidOperationException){
+   // A PDecision that failed or never became ready stays alive; without this the next start reuses the same
+   // dead process forever. Killing it makes the next supervision round launch a fresh one.
+   if(!decision.HasExited){Log("Stopping the unhealthy PDecision so the next start launches a fresh one.");try{decision.Kill(true);}catch{}}
+   throw;
+  }
   Log("PDecision is ready. Starting PokerController.");
   var worker=Owned(apps.WorkerPid,apps.WorkerStarted,apps.WorkerProcessExe??apps.WorkerExe);
   if(worker==null){
