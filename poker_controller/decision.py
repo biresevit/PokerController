@@ -1,6 +1,17 @@
 from __future__ import annotations
 
+import asyncio
+import logging
+import time
+
 import httpx
+
+log = logging.getLogger(__name__)
+
+# While PDecision is swapped for a new version (or restarts) its port refuses connections or answers 503 for a few
+# seconds. Requests that never reached a working PDecision are retried for this long; anything else (a timeout or
+# a dropped connection after the request was sent) is not, because PDecision may already have processed it.
+UNAVAILABLE_RETRY_SECONDS = 12
 
 from .sites import EVENBET, HAND_HISTORY
 
@@ -33,20 +44,32 @@ class PDecision:
     async def require_evenbet_hand_history(self) -> dict:
         return await self.require_hand_history(EVENBET)
 
+    async def post(self, path: str, body: dict, retry_seconds: float | None = None) -> httpx.Response:
+        deadline = time.monotonic() + (UNAVAILABLE_RETRY_SECONDS if retry_seconds is None else retry_seconds)
+        delay = 0.25
+        while True:
+            try:
+                response = await self.http.post(path, json=body)
+                if response.status_code != 503 or time.monotonic() >= deadline:
+                    response.raise_for_status()
+                    return response
+                reason = "not ready (503)"
+            except httpx.ConnectError as exc:
+                if time.monotonic() >= deadline:
+                    raise
+                reason = f"unreachable ({type(exc).__name__})"
+            log.warning("PDecision %s for %s; retrying", reason, path)
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 1.0)
+
     async def decide(self, hand_state: dict) -> dict:
-        response = await self.http.post("/api/decision", json=hand_state)
-        response.raise_for_status()
-        return response.json()
+        return (await self.post("/api/decision", hand_state)).json()
 
     async def record(self, hand_state: dict):
-        response = await self.http.post("/api/handhistory", json=hand_state)
-        response.raise_for_status()
-        return bool(response.json().get("accepted"))
+        return bool((await self.post("/api/handhistory", hand_state)).json().get("accepted"))
 
     async def complete(self, hand_state: dict) -> bool:
-        response = await self.http.post("/api/handhistory/complete", json=hand_state)
-        response.raise_for_status()
-        return bool(response.json().get("accepted"))
+        return bool((await self.post("/api/handhistory/complete", hand_state)).json().get("accepted"))
 
     async def close(self):
         await self.http.aclose()

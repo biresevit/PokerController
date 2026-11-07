@@ -60,3 +60,9 @@ async def test_the_worker_plays_its_own_site_when_the_site_list_cannot_be_read(t
 
     await asyncio.wait_for(asyncio.gather(run_sites(settings, FakePilot, machine_sites, poll=.05), stop_later()), 10)
     assert [s[0] for s in FakePilot.started] == [5]
+
+
+
+def test_a_site_that_keeps_failing_backs_off():
+    from poker_controller.worker import restart_delay
+    assert [restart_delay(n) for n in range(1, 9)] == [5, 10, 20, 40, 80, 160, 300, 300]

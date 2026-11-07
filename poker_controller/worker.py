@@ -13,7 +13,17 @@ log = logging.getLogger(__name__)
 # The poker site a log line belongs to, on a PC that plays several.
 SITE = contextvars.ContextVar("site", default="")
 SITE_POLL_SECONDS = 60
-RESTART_SECONDS = 30
+# A site that stops is started again quickly, so a crash costs few seconds of play and the seats are likely still
+# there. A site that keeps failing (a blocked or rate-limited login) waits twice as long each time, up to five
+# minutes: retrying every 30 s spent a login each time and kept the PC's IP rate-limited (site 1004, 2026-11-07).
+RESTART_SECONDS = 5
+MAX_RESTART_SECONDS = 300
+HEALTHY_RUN_SECONDS = 600
+
+
+def restart_delay(failures: int, restart: float = RESTART_SECONDS, max_restart: float = MAX_RESTART_SECONDS) -> float:
+    """Seconds before the next start of a site that failed `failures` times in a row."""
+    return min(max_restart, restart * 2 ** (max(failures, 1) - 1))
 
 
 class SiteFilter(logging.Filter):
@@ -22,16 +32,17 @@ class SiteFilter(logging.Filter):
         return True
 
 
-async def run_sites(settings, pilot_factory, machine_sites, *, poll=SITE_POLL_SECONDS, restart=RESTART_SECONDS):
+async def run_sites(settings, pilot_factory, machine_sites, *, poll=SITE_POLL_SECONDS, restart=RESTART_SECONDS,
+                    max_restart=MAX_RESTART_SECONDS, healthy=HEALTHY_RUN_SECONDS):
     """One Pilot per poker site the PC plays, started when a site is added to the PC, stopped when it is taken off.
 
     The worker's own site (--site-id) is played also when the site list can't be read. A Pilot that fails is started
-    again after `restart` seconds. The first Pilot writes to the output folder itself (status.json, read by the
+    again after `restart` seconds, doubling after each failure that follows a short run (up to `max_restart`). The first Pilot writes to the output folder itself (status.json, read by the
     updater), the others to a site-<id> folder in it; the stop marker in the output folder stops them all.
     """
     root = Path(settings.output)
     stop_file = root / "stop"
-    runs, retry_at = {}, {}
+    runs, retry_at, failures, started_at = {}, {}, {}, {}
 
     async def play(site, args):
         SITE.set(f"[site {site}] ")
@@ -42,6 +53,7 @@ async def run_sites(settings, pilot_factory, machine_sites, *, poll=SITE_POLL_SE
         args = SimpleNamespace(**{**vars(settings), "site_id": site, "output": str(output),
                                   "stop_file": str(stop_file), "stop_event": asyncio.Event()})
         runs[site] = (asyncio.create_task(play(site, args)), args.stop_event)
+        started_at[site] = time.monotonic()
         log.info("Playing poker site %s on machine %s", site, settings.machine_id)
 
     next_poll = 0.0
@@ -61,8 +73,12 @@ async def run_sites(settings, pilot_factory, machine_sites, *, poll=SITE_POLL_SE
             run = runs.get(site)
             if run and run[0].done() and not run[1].is_set() and site not in retry_at:
                 error = run[0].exception() if not run[0].cancelled() else None
-                log.warning("Poker site %s stopped (%s); starting it again in %s s", site, error or "ended", restart)
-                retry_at[site] = time.monotonic() + restart
+                if time.monotonic() - started_at.get(site, 0) >= healthy:
+                    failures[site] = 0
+                failures[site] = failures.get(site, 0) + 1
+                delay = restart_delay(failures[site], restart, max_restart)
+                log.warning("Poker site %s stopped (%s); starting it again in %s s", site, error or "ended", delay)
+                retry_at[site] = time.monotonic() + delay
             if (not run or run[0].done()) and time.monotonic() >= retry_at.get(site, 0):
                 retry_at.pop(site, None)
                 start(site)
