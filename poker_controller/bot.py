@@ -4,6 +4,8 @@ import asyncio
 import logging
 import time
 
+import httpx
+
 from .client import EvenBetClient  # or BluffPokerClient: the same interface
 from .decision import PDecision
 from .state import HandStateMapper, amount_scale, decision_to_play
@@ -87,15 +89,24 @@ class Bot:
                     self.history_frames.append(hs.copy())
                 if state.get("ts") == 3:
                     if self.history_frames and any(hs["Winners"]):
-                        for frame in self.history_frames:
-                            accepted = await self.decisions.record(frame)
-                            if not accepted:
-                                log.debug("PDecision skipped hand-history frame for hand %s", hand_id)
-                        if await self.decisions.complete(self.history_frames[-1]):
+                        try:
+                            for frame in self.history_frames:
+                                accepted = await self.decisions.record(frame)
+                                if not accepted:
+                                    log.debug("PDecision skipped hand-history frame for hand %s", hand_id)
+                            completed = await self.decisions.complete(self.history_frames[-1])
+                        except httpx.HTTPError as exc:
+                            # PDecision unavailable even after the retries (e.g. restarting): this hand's history
+                            # is lost, but the table worker must keep playing.
+                            log.error("Hand history %s not saved, PDecision unavailable (%s)", hand_id, type(exc).__name__)
+                            self.history_complete.add(hand_id)
+                            self.history_frames = []
+                            completed = None
+                        if completed:
                             self.history_complete.add(hand_id)
                             log.info("Completed hand history %s with %s frames", hand_id, len(self.history_frames))
                             self.history_frames = []
-                        else:
+                        elif completed is not None:
                             log.error("PDecision could not complete hand history %s", hand_id)
         key = self.mapper.turn_key(state, hero)
         if not key or key in self.submitted:
@@ -120,7 +131,14 @@ class Bot:
             if self.manual_hand==state["gi"]:
                 return
         hs["IsNewHand"] = self.decision_hand != state["gi"]
-        decision = await self.decisions.decide(hs)
+        try:
+            decision = await self.decisions.decide(hs)
+        except httpx.HTTPError as exc:
+            # PDecision unavailable even after the retries: play the turn safely instead of stopping the table
+            # worker, which would leave the bot seated and timing out every hand.
+            log.error("PDecision unavailable for table %s hand %s (%s); taking a free check or folding",
+                      self.table_id, state["gi"], type(exc).__name__)
+            decision = {"Action": 6, "Fallback": True}
         self.decision_hand = state["gi"]
         latest = self.client.states[self.table_id]
         if self.table_detached:return
@@ -128,7 +146,7 @@ class Bot:
         if latest_hero != hero or self.mapper.turn_key(latest, hero) != key:
             log.warning("Discarding stale decision for hand %s", state["gi"])
             return
-        if decision.get("Action") == 6:
+        if decision.get("Action") == 6 and not decision.get("Fallback"):
             log.error("PDecision returned Action=6 for hand %s; taking a free check or folding", state["gi"])
         if decision.get("Action") == 2 and 2 not in latest.get("aa", []) and 1 in latest.get("aa", []):
             log.error("PDecision returned CHECK for table %s hand %s, but legal actions are %s; folding",

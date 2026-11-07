@@ -289,3 +289,47 @@ async def test_bot_plays_when_the_manual_control_database_is_unreachable(state):
                                     "claim_auto": AsyncMock(side_effect=OSError("database timeout"))})()
     await Bot(c, FakeDecisions(), state["ti"], control=control).process(state)
     c.play.assert_awaited_once_with(state["ti"], 3, 100)
+
+
+async def test_unavailable_pdecision_folds_and_keeps_the_table_worker(state, caplog):
+    c = EvenBetClient()
+    c.player_id = 73582719
+    c.states[state["ti"]] = state
+    played = []
+    async def play(*args):
+        played.append(args)
+    c.play = play
+    class Unavailable(FakeDecisions):
+        async def decide(self, frame):
+            raise httpx.ConnectError("refused", request=httpx.Request("POST", "http://pdecision/api/decision"))
+    bot = Bot(c, Unavailable(), state["ti"])
+    await bot.process(state)  # must not raise: an exception here stops the table worker
+    assert played == [(state["ti"], 1, 0)]
+    assert "PDecision unavailable" in caplog.text and "returned Action=6" not in caplog.text
+
+
+async def test_unavailable_pdecision_loses_one_hand_history_but_keeps_playing(state, caplog):
+    state["m"]["ai"] = 255
+    state["m"]["r"] = 1
+    state["aa"] = []
+    c = EvenBetClient()
+    c.player_id = 73582719
+    c.states[state["ti"]] = state
+    class Down:
+        calls = 0
+        async def record(self, frame):
+            self.calls += 1
+            raise httpx.ConnectError("refused", request=httpx.Request("POST", "http://pdecision/api/handhistory"))
+        async def complete(self, frame):
+            raise AssertionError("not reached")
+    decisions = Down()
+    bot = Bot(c, decisions, state["ti"], hand_history=True)
+    await bot.process(state)
+    ended = copy.deepcopy(state)
+    ended["ts"] = 3
+    ended["m"]["r"] = 6
+    ended["s"][2]["c"] += 500
+    await bot.process(ended)  # must not raise
+    assert decisions.calls == 1 and "not saved, PDecision unavailable" in caplog.text
+    await bot.process(ended)  # the lost hand is not sent again
+    assert decisions.calls == 1
