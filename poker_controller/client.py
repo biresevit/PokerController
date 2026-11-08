@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass
 from decimal import Decimal
 
+from . import token_store
 from .transport import Connection, ProtocolError
 from .state import amount_scale
 
@@ -70,6 +71,7 @@ class EvenBetClient:
         self.table_select_indices: dict[int, int] = {}
         self.changed = asyncio.Event()
         self.auth = ""
+        self.token_site = f"evenbet:{settings.url}"
         self.chat_events = asyncio.Queue(maxsize=2000)
         self.chat_history_requests = set()
         self.chat_overflow = False
@@ -91,6 +93,12 @@ class EvenBetClient:
                 except asyncio.QueueFull: self.chat_overflow=True
         elif topic == "AuthState":
             self.auth = message.get("auth", "")
+            # Kept on this PC: the next login (a restarted worker) sends it as oldAuth, as EvenBet's own client
+            # does on a reconnect. Without it EvenBet still shows the bot seated but refuses every command for the
+            # seat ("There is no such a player at the table"), and the seat is lost (MSI, 2026-11-09).
+            if self.auth:
+                token_store.save(self.token_site, self.settings.username, access=self.auth, refresh=self.auth,
+                                 expires_at=time.time() + 7 * 86400, player_id=None)
         elif topic == "GameState":
             state = message.get("gameState", message.get("GameState", {}))
             if state.get("ti"):
@@ -125,9 +133,20 @@ class EvenBetClient:
         await self.connection.request("ClientVersion", clientVersion="HTML5", locale="en",
                                       protocolVersion=self.settings.protocol_version, skinName=self.settings.skin)
         if login:
-            reply = await self.connection.request("Login", login=self.settings.username,
-                password=self.settings.password, oldAuth="", tfaAuth="", tfaType=95,
-                timeZone="Europe/Budapest", loginParam="{}", secondary=False, remember=False)
+            saved = token_store.load(self.token_site, self.settings.username)
+            old_auth = saved["refresh"] if saved else ""
+            async def login(old):
+                return await self.connection.request("Login", login=self.settings.username,
+                    password=self.settings.password, oldAuth=old, tfaAuth="", tfaType=95,
+                    timeZone="Europe/Budapest", loginParam="{}", secondary=False, remember=False)
+            try:
+                reply = await login(old_auth)
+            except ProtocolError:
+                if not old_auth:
+                    raise
+                # An expired or unknown saved session: a normal login.
+                token_store.forget(self.token_site, self.settings.username)
+                reply = await login("")
             self.player_id = int(reply.get("playerId") or reply["text"])
             await self.refresh_player_tables()
         return self
