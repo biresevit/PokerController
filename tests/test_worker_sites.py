@@ -66,3 +66,36 @@ async def test_the_worker_plays_its_own_site_when_the_site_list_cannot_be_read(t
 def test_a_site_that_keeps_failing_backs_off():
     from poker_controller.worker import restart_delay
     assert [restart_delay(n) for n in range(1, 9)] == [5, 10, 20, 40, 80, 160, 300, 300]
+
+
+
+def test_a_site_that_was_ready_restarts_quickly_after_a_failure(tmp_path, monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    from poker_controller import worker
+    counts = []
+    monkeypatch.setattr(worker, "restart_delay", lambda failures, restart, max_restart: counts.append(failures) or 0)
+
+    class ReadyThenFails:
+        def __init__(self, args): self.args = args
+        async def run_cloud_worker(self):
+            self.args.ready = True  # got ready, then failed: the restart backoff must not grow
+            raise RuntimeError("TABLE_CLOSED")
+
+    class NeverReady(ReadyThenFails):
+        async def run_cloud_worker(self):
+            raise RuntimeError("login: PLAYER_BLOCKED")
+
+    async def go(factory, folder):
+        settings = SimpleNamespace(output=str(folder), site_id=7, machine_id=1)
+        async def stop_later():
+            await asyncio.sleep(3.5)
+            (folder / "stop").write_text("x")
+        await asyncio.gather(worker.run_sites(settings, factory, lambda m: [7], poll=.05), stop_later())
+
+    (tmp_path / "a").mkdir(); (tmp_path / "b").mkdir()
+    asyncio.run(go(ReadyThenFails, tmp_path / "a"))
+    assert counts and set(counts) == {1}
+    counts.clear()
+    asyncio.run(go(NeverReady, tmp_path / "b"))
+    assert counts[:3] == [1, 2, 3]

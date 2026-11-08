@@ -42,7 +42,7 @@ async def run_sites(settings, pilot_factory, machine_sites, *, poll=SITE_POLL_SE
     """
     root = Path(settings.output)
     stop_file = root / "stop"
-    runs, retry_at, failures, started_at = {}, {}, {}, {}
+    runs, retry_at, failures, started_at, site_args = {}, {}, {}, {}, {}
 
     async def play(site, args):
         SITE.set(f"[site {site}] ")
@@ -54,6 +54,7 @@ async def run_sites(settings, pilot_factory, machine_sites, *, poll=SITE_POLL_SE
                                   "stop_file": str(stop_file), "stop_event": asyncio.Event()})
         runs[site] = (asyncio.create_task(play(site, args)), args.stop_event)
         started_at[site] = time.monotonic()
+        site_args[site] = args
         log.info("Playing poker site %s on machine %s", site, settings.machine_id)
 
     next_poll = 0.0
@@ -73,7 +74,9 @@ async def run_sites(settings, pilot_factory, machine_sites, *, poll=SITE_POLL_SE
             run = runs.get(site)
             if run and run[0].done() and not run[1].is_set() and site not in retry_at:
                 error = run[0].exception() if not run[0].cancelled() else None
-                if time.monotonic() - started_at.get(site, 0) >= healthy:
+                # Only a run that never got ready (e.g. a blocked login) backs off further; one that got ready and
+                # then failed restarts quickly, while BluffPoker still holds its seats (~29 s).
+                if getattr(site_args.get(site), "ready", False) or time.monotonic() - started_at.get(site, 0) >= healthy:
                     failures[site] = 0
                 failures[site] = failures.get(site, 0) + 1
                 delay = restart_delay(failures[site], restart, max_restart)
