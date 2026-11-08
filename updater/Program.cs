@@ -34,7 +34,11 @@ static class Program {
  static string StateFile=>Path.Combine(C.Root,"active.json");
  static string OperationFile=>Path.Combine(C.Root,"operation.json");
  static string LogFile=>Path.Combine(C.Root,"updater.log");
+ // Serializes supervision restarts with intentional stops and installs.
  static readonly SemaphoreSlim StateLock=new(1,1);
+ const string AgentVersion="1.0.17";
+ // A stopped application is noticed within this time (BluffPoker keeps a disconnected seat ~29 s).
+ static readonly TimeSpan SuperviseEvery=TimeSpan.FromSeconds(10);
  static void Log(string value){lock(Api)File.AppendAllText(LogFile,$"{DateTime.UtcNow:O} {value.Split('?')[0]}{Environment.NewLine}");}
  static T Read<T>(string path){if(path.EndsWith(".protected",StringComparison.OrdinalIgnoreCase))return JsonSerializer.Deserialize<T>(SecretStore.Read(path),Json)!;using var stream=new FileStream(path,FileMode.Open,FileAccess.Read,FileShare.ReadWrite|FileShare.Delete);return JsonSerializer.Deserialize<T>(stream,Json)!;}
  static void Save<T>(string path,T value){File.WriteAllText(path+".tmp",JsonSerializer.Serialize(value,Json));File.Move(path+".tmp",path,true);}
@@ -59,8 +63,8 @@ static class Program {
    var health=await response.Content.ReadFromJsonAsync<JsonElement>();return health.GetProperty("status").GetString()=="ready";
   }catch{return false;}
  }
- static async Task<Poll> Poll()=>await Request<Poll>("poll",new{instance_id=Instance,agent_version="1.0.16",apps_running=await RuntimeHealthy(),needs_install=!File.Exists(StateFile)&&!File.Exists(OperationFile)});
- static Task<JsonElement> Report(Job job,string phase,string detail="",Manifest? manifest=null)=>Request<JsonElement>("report",new{instance_id=Instance,agent_version="1.0.16",task_id=job.Id,phase,detail,pdecision_version=manifest?.PdecisionVersion,controller_version=manifest?.ControllerVersion});
+ static async Task<Poll> Poll()=>await Request<Poll>("poll",new{instance_id=Instance,agent_version=AgentVersion,apps_running=await RuntimeHealthy(),needs_install=!File.Exists(StateFile)&&!File.Exists(OperationFile)});
+ static Task<JsonElement> Report(Job job,string phase,string detail="",Manifest? manifest=null)=>Request<JsonElement>("report",new{instance_id=Instance,agent_version=AgentVersion,task_id=job.Id,phase,detail,pdecision_version=manifest?.PdecisionVersion,controller_version=manifest?.ControllerVersion});
  static Manifest Verify(Job job){
   byte[] bytes=Encoding.UTF8.GetBytes(job.Manifest),signature=Convert.FromBase64String(job.Signature);
   bool valid=false;foreach(var key in C.TrustedKeys){using var rsa=RSA.Create();rsa.ImportFromPem(key);if(rsa.VerifyData(bytes,signature,HashAlgorithmName.SHA256,RSASignaturePadding.Pss)){valid=true;break;}}
@@ -291,11 +295,75 @@ static class Program {
   File.Delete(marker);
  }
  static bool ShouldSupervise(Job? job)=>job==null||job.Status is "preparing" or "draining" or "resuming";
- static async Task Supervise(){
-  if(!File.Exists(StateFile)||File.Exists(OperationFile))return;
+ static async Task<bool> Supervise(){
+  if(!File.Exists(StateFile)||File.Exists(OperationFile))return false;
   var active=Read<Apps>(StateFile);
   if(active.ReleaseId!=null&&(Owned(active.DecisionPid,active.DecisionStarted,active.DecisionExe)==null||Owned(active.WorkerPid,active.WorkerStarted,active.WorkerProcessExe??active.WorkerExe)==null)){
-   Log("Restarting a stopped managed application.");await Start(active);
+   Log("Restarting a stopped managed application.");await Start(active);return true;
+  }
+  return false;
+ }
+ // Kept across restarts of the updater on this PC: the control plane refuses a different instance for 60 s after
+ // the last heartbeat (two updaters for one enrollment), and a replaced or restarted updater is the same instance.
+ static string SavedInstance(){
+  var path=Path.Combine(C.Root,"instance.json");
+  try{if(File.Exists(path)&&Guid.TryParse(Read<string>(path),out var saved))return saved.ToString();}catch{}
+  var fresh=Guid.NewGuid().ToString();try{Save(path,fresh);}catch{}return fresh;
+ }
+ static string SupervisionFile=>Path.Combine(C.Root,"supervision.json");
+ // Its own loop: a long release download or a slow control-plane answer no longer delays a restart.
+ static async Task SupervisionLoop(){
+  int restarts=0;var last=DateTime.MinValue;
+  while(true){
+   var delay=SuperviseEvery;
+   try{
+    await StateLock.WaitAsync();
+    try{
+     // The last server-approved mode survives a temporary network outage.
+     if(File.Exists(SupervisionFile)&&Read<bool>(SupervisionFile)&&await Supervise()){
+      // An application that keeps stopping is restarted less and less often (10 s doubling to 5 minutes).
+      restarts=DateTime.UtcNow-last<TimeSpan.FromMinutes(10)?restarts+1:1;last=DateTime.UtcNow;
+      delay=TimeSpan.FromSeconds(Math.Min(300,10*Math.Pow(2,restarts-1)));
+     }
+    }finally{StateLock.Release();}
+   }catch(Exception error){Log("Supervision failed: "+error.Message);delay=TimeSpan.FromSeconds(60);}
+   await Task.Delay(delay);
+  }
+ }
+ // Run by the log collector bundled in every release: an older installed updater is replaced by this one, so
+ // updater fixes reach PCs with the normal application rollout instead of a Setup rerun.
+ static async Task ReplaceOlderAgent(string configPath){
+  var self=Path.GetFullPath(Environment.ProcessPath!);var folder=Path.GetDirectoryName(Path.GetFullPath(configPath))!;
+  var installed=Path.Combine(folder,"PokerSuite.Updater.exe");
+  if(string.Equals(self,installed,StringComparison.OrdinalIgnoreCase)||!File.Exists(installed))return;
+  static Version Of(string path){try{return Version.Parse(FileVersionInfo.GetVersionInfo(path).FileVersion??"0.0");}catch{return new Version(0,0);}}
+  var mine=Of(self);var theirs=Of(installed);
+  if(theirs>=mine)return;
+  // A rollout starts the new worker (and this collector) before the installation is acknowledged: the updater is
+  // replaced as soon as it has finished, never in the middle of it.
+  if(File.Exists(OperationFile)){
+   Log($"Updater {theirs} will be replaced by {mine} after the current installation.");
+   var until=DateTime.UtcNow.AddHours(3);
+   while(File.Exists(OperationFile)){if(DateTime.UtcNow>until)return;await Task.Delay(15000);}
+   await Task.Delay(5000);
+   if(File.Exists(OperationFile)||Of(installed)>=mine)return;
+  }
+  var staged=installed+".new";
+  File.Copy(self,staged,true);
+  if(!SHA256.HashData(File.ReadAllBytes(staged)).AsSpan().SequenceEqual(SHA256.HashData(File.ReadAllBytes(self))))throw new InvalidDataException("The staged updater copy is damaged.");
+  Log($"Replacing updater {theirs} with {mine}. The applications keep running.");
+  try{
+   // Only the updater process: PDecision and PokerController keep running and are adopted by the new updater.
+   foreach(var process in Process.GetProcessesByName("PokerSuite.Updater")){
+    try{if(process.Id!=Environment.ProcessId&&string.Equals(process.MainModule?.FileName,installed,StringComparison.OrdinalIgnoreCase)){process.Kill(false);process.WaitForExit(15000);}}catch{}
+   }
+   File.Move(staged,installed,true);
+  }finally{
+   // Through the scheduled task, so the updater keeps its normal logon context; directly if that fails.
+   bool started=false;
+   try{using var run=Process.Start(new ProcessStartInfo("schtasks.exe",$"/Run /TN \"PokerSuite Updater {C.MachineId}\""){UseShellExecute=false,CreateNoWindow=true})!;run.WaitForExit(30000);started=run.ExitCode==0;}catch{}
+   if(!started){var info=new ProcessStartInfo(installed){UseShellExecute=false,CreateNoWindow=true,WorkingDirectory=folder};info.ArgumentList.Add("--config");info.ArgumentList.Add(configPath);Process.Start(info);}
+   Log("Updater restarted"+(started?" through its scheduled task.":" directly."));
   }
  }
  static async Task Main(string[] args){
@@ -308,40 +376,39 @@ static class Program {
   if(new Uri(C.BaseUrl).Scheme!="https"&&!new Uri(C.BaseUrl).IsLoopback)throw new InvalidDataException("Updater API must use HTTPS.");
   if(args.Contains("--diagnostics-only")){
    var parentIndex=Array.IndexOf(args,"--parent");
+   var configPath=args[configIndex+1];
+   _=Task.Run(async()=>{try{await ReplaceOlderAgent(configPath);}catch(Exception error){Log("Updater replacement failed: "+error.Message);}});
    await DiagnosticsCollector.Run(C,parentIndex>=0?int.Parse(args[parentIndex+1]):null);return;
   }
   using var mutex=new Mutex(true,$"Local\\PokerSuiteUpdater-{C.MachineId}",out var owner);if(!owner)return;
+  Instance=SavedInstance();
   Log("Updater started.");
   _=Task.Run(()=>DiagnosticsCollector.Run(C));
   // Heartbeats remain independent of downloads, graceful stops and startup.
   _=Task.Run(async()=>{while(true){try{await Poll();}catch{}await Task.Delay(10000);}});
-  var nextStart=DateTime.MinValue;
+  _=Task.Run(SupervisionLoop);
   while(true){
    Job? job=null;
    try{
-    // The last server-approved mode survives a temporary network outage.
-    var supervision=Path.Combine(C.Root,"supervision.json");
-    if(File.Exists(supervision)&&Read<bool>(supervision)&&DateTime.UtcNow>=nextStart){nextStart=DateTime.UtcNow.AddSeconds(90);await Supervise();}
     var reply=await Poll();job=reply.Task;
-    Save(supervision,ShouldSupervise(job));
+    await StateLock.WaitAsync();try{Save(SupervisionFile,ShouldSupervise(job));}finally{StateLock.Release();}
     if(File.Exists(OperationFile)){
      var pending=Read<Operation>(OperationFile);
      if(pending.Phase=="awaiting_resume"&&((job?.Status=="resuming"&&job.ReleaseId==pending.Target.ReleaseId)||(job==null&&reply.InstalledReleaseId==pending.Target.ReleaseId))){
       File.Delete(OperationFile);Log("Healthy application switch acknowledged by the control plane.");
      }
     }
-    if(ShouldSupervise(job)&&DateTime.UtcNow>=nextStart){nextStart=DateTime.UtcNow.AddSeconds(90);await Supervise();}
     if(job!=null){
      var manifest=Verify(job);
      if(job.Status is "preparing" or "draining"){
       await Stage(job,manifest);await Report(job,"staged");
      }else if(!job.Paused&&job.Status=="forcing"){
-      await KillNow(Read<Apps>(StateFile));await Report(job,"force_stopped");
+      await StateLock.WaitAsync();try{await KillNow(Read<Apps>(StateFile));}finally{StateLock.Release();}await Report(job,"force_stopped");
      }else if(!job.Paused&&job.Status=="reconciling"){
-      await Report(job,"reconciling");await StopWorker(Read<Apps>(StateFile));await Report(job,"reconciled");
+      await Report(job,"reconciling");await StateLock.WaitAsync();try{await StopWorker(Read<Apps>(StateFile));}finally{StateLock.Release();}await Report(job,"reconciled");
      }else if(!job.Paused&&(job.Status is "stopping" or "installing" or "verifying")){
       if(File.Exists(OperationFile)&&Read<Operation>(OperationFile).Phase=="failed"){Log("Waiting for manual recovery of the interrupted update.");}
-      else {var version=await Stage(job,manifest);await Install(job,manifest,version);}
+      else {var version=await Stage(job,manifest);await StateLock.WaitAsync();try{await Install(job,manifest,version);}finally{StateLock.Release();}}
      }
     }
    }catch(Exception error){

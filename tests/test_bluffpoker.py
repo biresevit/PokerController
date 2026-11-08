@@ -1,5 +1,6 @@
 import copy
 import json
+import time
 from pathlib import Path
 
 import httpx
@@ -374,3 +375,79 @@ def test_a_pc_without_a_config_file_uses_the_values_stored_with_the_site(tmp_pat
     s = bp.BluffPokerSettings.load("newbot", hub_url="https://hub.test", path=tmp_path / "missing.json", environ={},
                                    email="n@test", password="pw", api_key="site-key", origin="https://site.test")
     assert (s.hub_url, s.api_key, s.origin, s.email) == ("https://hub.test", "site-key", "https://site.test", "n@test")
+
+
+def login_handler(calls, *, refresh_status=200):
+    def handler(request):
+        path = request.url.path
+        calls.append(path)
+        if path.endswith("/auth/login"):
+            return httpx.Response(200, json={"pokerToken": "a1", "refreshToken": "r1", "expiresIn": 3600,
+                                             "clientUserId": PID})
+        if path == "/auth/refresh":
+            if refresh_status != 200:
+                return httpx.Response(refresh_status, json={"error": "INVALID_REFRESH"})
+            body = json.loads(request.content)
+            assert body["refreshToken"] == "r1"
+            return httpx.Response(200, json={"accessToken": "a2", "refreshToken": "r2", "expiresIn": 3600})
+        return httpx.Response(404)
+    return handler
+
+
+async def test_restarted_worker_resumes_the_saved_login_without_logging_in(token_dir):
+    calls = []
+    await hub_with(login_handler(calls)).login()
+    assert calls == ["/integrations/clients/auth/login"]
+    assert len(list(token_dir.glob("*.bin"))) == 1
+    assert b"r1" not in next(token_dir.glob("*.bin")).read_bytes()  # encrypted on Windows
+
+    bp.CREDENTIALS.clear()  # a new worker process
+    hub = hub_with(login_handler(calls))
+    assert (await hub.login())["clientUserId"] == PID
+    assert calls == ["/integrations/clients/auth/login"]  # the saved token was still valid: no request
+    assert hub.access == "a1" and hub.player_id == PID
+
+
+async def test_expired_saved_login_is_refreshed_not_logged_in_again(token_dir, monkeypatch):
+    calls = []
+    await hub_with(login_handler(calls)).login()
+    bp.CREDENTIALS.clear()
+    later = time.time() + 7200  # the saved access token expired while the worker was down
+    monkeypatch.setattr(bp.time, "time", lambda: later)
+    hub = hub_with(login_handler(calls))
+    await hub.login()
+    assert calls == ["/integrations/clients/auth/login", "/auth/refresh"]
+    assert hub.access == "a2" and not hub.restored
+    bp.CREDENTIALS.clear()
+    assert bp.token_store.load("https://hub.test", "guido66@bots.test")["refresh"] == "r2"  # rotated pair saved
+
+
+async def test_refused_saved_login_falls_back_to_a_normal_login(token_dir, monkeypatch):
+    calls = []
+    await hub_with(login_handler(calls)).login()
+    bp.CREDENTIALS.clear()
+    later = time.time() + 7200
+    monkeypatch.setattr(bp.time, "time", lambda: later)
+    hub = hub_with(login_handler(calls, refresh_status=401))
+    await hub.login()
+    assert calls == ["/integrations/clients/auth/login", "/auth/refresh", "/integrations/clients/auth/login"]
+    assert hub.access == "a1" and not hub.failed
+
+
+async def test_rate_limited_refresh_keeps_the_saved_login(token_dir, monkeypatch):
+    calls = []
+    await hub_with(login_handler(calls)).login()
+    bp.CREDENTIALS.clear()
+    later = time.time() + 7200
+    monkeypatch.setattr(bp.time, "time", lambda: later)
+    with pytest.raises(bp.BluffPokerError):
+        await hub_with(login_handler(calls, refresh_status=429)).login()
+    assert calls == ["/integrations/clients/auth/login", "/auth/refresh"]
+    assert bp.token_store.load("https://hub.test", "guido66@bots.test") is not None
+
+
+def test_a_damaged_token_file_is_ignored(token_dir):
+    token_dir.mkdir(parents=True)
+    bp.token_store.save("https://hub.test", "x@y", access="a", refresh="r", expires_at=time.time() + 60, player_id="p")
+    next(token_dir.glob("*.bin")).write_bytes(b"garbage")
+    assert bp.token_store.load("https://hub.test", "x@y") is None

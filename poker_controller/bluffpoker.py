@@ -41,6 +41,7 @@ from urllib.parse import quote, urlencode, urlsplit, urlunsplit, parse_qsl
 import httpx
 from websockets.asyncio.client import connect as ws_connect
 
+from . import token_store
 from .sites import BLUFFPOKER, table_key
 from .transport import ProtocolError, redact
 
@@ -421,6 +422,7 @@ class Credential:
         self.player_id: str | None = None
         self.failed: str | None = None
         self.lock = asyncio.Lock()
+        self.restored = False  # the pair was read from this PC's token store and not yet proven by a refresh
 
 
 # The hub allows 30 logins per 15 minutes per IP: sessions of an account (lobby scans, plays, reconnects) reuse
@@ -434,16 +436,33 @@ class Hub:
     def __init__(self, settings: BluffPokerSettings, http: httpx.AsyncClient | None = None, clock=time.monotonic):
         self.settings, self.clock = settings, clock
         self.http = http or httpx.AsyncClient(base_url=settings.hub_url, timeout=settings.request_timeout)
-        self.credential = CREDENTIALS.setdefault((settings.hub_url, (settings.email or settings.username).casefold()),
-                                                 Credential())
+        self.account = (settings.email or settings.username).casefold()
+        key = (settings.hub_url, self.account)
+        if key not in CREDENTIALS:
+            CREDENTIALS[key] = self.restore(Credential())
+        self.credential = CREDENTIALS[key]
+
+    def restore(self, credential: Credential) -> Credential:
+        """The pair a previous worker process saved on this PC (a restart resumes it instead of logging in)."""
+        saved = token_store.load(self.settings.hub_url, self.account)
+        if saved:
+            credential.access, credential.refresh_token = saved.get("access"), saved["refresh"]
+            credential.expires = self.clock() + (float(saved.get("expires_at") or 0) - time.time())
+            credential.player_id, credential.restored = saved.get("player_id"), True
+        return credential
+
+    def persist(self):
+        if self.access and self.refresh_token:
+            token_store.save(self.settings.hub_url, self.account, access=self.access, refresh=self.refresh_token,
+                             expires_at=time.time() + (self.expires - self.clock()), player_id=self.player_id)
 
     def __getattr__(self, name):
-        if name in ("access", "refresh_token", "expires", "player_id", "failed", "lock"):
+        if name in ("access", "refresh_token", "expires", "player_id", "failed", "lock", "restored"):
             return getattr(self.__dict__["credential"], name)
         raise AttributeError(name)
 
     def __setattr__(self, name, value):
-        if name in ("access", "refresh_token", "expires", "player_id", "failed"):
+        if name in ("access", "refresh_token", "expires", "player_id", "failed", "restored"):
             setattr(self.credential, name, value)
         else:
             super().__setattr__(name, value)
@@ -494,6 +513,16 @@ class Hub:
         """Log in, or reuse the account's pair while it is valid (it is refreshed before it expires)."""
         if self.access and not self.failed and self.expires - self.clock() > REFRESH_AHEAD_SECONDS:
             return {"clientUserId": self.player_id, "reused": True}
+        if self.restored and self.refresh_token and self.player_id and not self.failed:
+            try:
+                await self.refresh(self.access)
+                return {"clientUserId": self.player_id, "reused": True}
+            except BluffPokerError as error:
+                if not error.terminal:
+                    raise  # network or rate limit: the saved pair is tried again next time
+                # Refused (expired, or replaced by a login elsewhere): a normal login.
+                self.failed, self.access, self.restored = None, None, False
+                token_store.forget(self.settings.hub_url, self.account)
         s = self.settings
         if not s.email or not s.password:
             raise BluffPokerError("CREDENTIALS_NOT_CONFIGURED", topic="login", terminal=True)
@@ -502,7 +531,8 @@ class Hub:
         if not isinstance(data, dict) or not isinstance(data.get("clientUserId"), str) or not data["clientUserId"]:
             raise BluffPokerError("BAD_RESPONSE", topic="login", uncertain=True)
         self.adopt(data.get("pokerToken"), data.get("refreshToken"), data.get("expiresIn"))
-        self.player_id, self.failed = data["clientUserId"], None
+        self.player_id, self.failed, self.restored = data["clientUserId"], None, False
+        self.persist()
         return data
 
     async def token(self) -> str:
@@ -528,9 +558,13 @@ class Hub:
             except BluffPokerError as error:
                 if error.terminal:
                     self.failed = "CREDENTIAL_EXPIRED"  # refused pair: no silent re-login
+                    if not self.restored:
+                        token_store.forget(self.settings.hub_url, self.account)
                 raise
             # Both tokens from the same answer, or nothing.
             self.adopt(data.get("accessToken") or data.get("pokerToken"), data.get("refreshToken"), data.get("expiresIn"))
+            self.restored = False
+            self.persist()
             return self.access
 
     async def authed(self, method, path, **kw):
