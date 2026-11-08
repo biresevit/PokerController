@@ -8,6 +8,7 @@ import httpx
 
 from .client import EvenBetClient  # or BluffPokerClient: the same interface
 from .decision import PDecision
+from .pacing import extra_seconds
 from .state import HandStateMapper, amount_scale, decision_to_play
 
 log = logging.getLogger(__name__)
@@ -131,6 +132,7 @@ class Bot:
             if self.manual_hand==state["gi"]:
                 return
         hs["IsNewHand"] = self.decision_hand != state["gi"]
+        asked = time.monotonic()
         try:
             decision = await self.decisions.decide(hs)
         except httpx.HTTPError as exc:
@@ -140,6 +142,11 @@ class Bot:
                       self.table_id, state["gi"], type(exc).__name__)
             decision = {"Action": 6, "Fallback": True}
         self.decision_hand = state["gi"]
+        # A human needs time to see the dealt cards and to press the buttons (pacing.py). The turn is checked
+        # again below, after the wait.
+        wait = extra_seconds(hs, decision.get("Action"), time.monotonic() - asked)
+        if wait > 0:
+            await asyncio.sleep(wait)
         latest = self.client.states[self.table_id]
         if self.table_detached:return
         latest_hero = self.client.hero_seat(latest)

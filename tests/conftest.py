@@ -15,3 +15,10 @@ def token_dir(tmp_path, monkeypatch):
     from poker_controller import token_store
     monkeypatch.setattr(token_store, "DIRECTORY", tmp_path / "tokens")
     return tmp_path / "tokens"
+
+
+@pytest.fixture(autouse=True)
+def no_human_pacing(monkeypatch):
+    """Bot tests act at once; tests/test_pacing.py covers the waits themselves."""
+    from poker_controller import bot
+    monkeypatch.setattr(bot, "extra_seconds", lambda *a, **k: 0.0)
