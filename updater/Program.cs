@@ -36,7 +36,7 @@ static class Program {
  static string LogFile=>Path.Combine(C.Root,"updater.log");
  // Serializes supervision restarts with intentional stops and installs.
  static readonly SemaphoreSlim StateLock=new(1,1);
- const string AgentVersion="1.0.17";
+ const string AgentVersion="1.0.18";
  // A stopped application is noticed within this time (BluffPoker keeps a disconnected seat ~29 s).
  static readonly TimeSpan SuperviseEvery=TimeSpan.FromSeconds(10);
  static void Log(string value){lock(Api)File.AppendAllText(LogFile,$"{DateTime.UtcNow:O} {value.Split('?')[0]}{Environment.NewLine}");}
@@ -105,7 +105,22 @@ static class Program {
   if(!File.Exists(Path.Combine(stage,"pdecision","PDecision.exe"))||!File.Exists(Path.Combine(stage,"controller","PokerController.exe")))throw new InvalidDataException("The release is missing an application.");
   File.WriteAllText(Path.Combine(stage,".package-sha256"),m.Sha256);
   if(Directory.Exists(version))throw new InvalidDataException("An incomplete release directory already exists; manual review is required.");
-  Directory.Move(stage,version);return version;
+  Directory.Move(stage,version);
+  WarmUp(Path.Combine(version,"controller","PokerController.exe"));
+  return version;
+ }
+ // One trial launch while the old applications still run: antivirus scans the new files and the disk cache fills
+ // now, not while the bots are away from their tables (the first start of a new release took ~8 s instead of ~1 s).
+ static void WarmUp(string exe){
+  try{
+   var info=new ProcessStartInfo(exe){WorkingDirectory=Path.GetDirectoryName(exe)!,UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true};
+   info.ArgumentList.Add("--warm-up");
+   var sw=Stopwatch.StartNew();
+   using var process=Process.Start(info)!;
+   _=process.StandardOutput.ReadToEndAsync();_=process.StandardError.ReadToEndAsync();
+   if(!process.WaitForExit(120000)){try{process.Kill(true);}catch{}}
+   Log($"PokerController warm-up launch took {sw.Elapsed.TotalSeconds:0.0}s.");
+  }catch(Exception error){Log("PokerController warm-up skipped: "+error.Message);}
  }
  static async Task<string> Hash(string path){await using var stream=File.OpenRead(path);return Convert.ToHexString(await SHA256.HashDataAsync(stream)).ToLowerInvariant();}
  delegate bool EnumWindow(IntPtr window,IntPtr data);
@@ -194,10 +209,22 @@ static class Program {
   }
   throw new TimeoutException("PDecision did not become healthy within two hours; check resource synchronization and the PDecision health response.");
  }
- static async Task Start(Apps apps,Manifest? expected=null){
+ // workerFirst: PokerController starts together with PDecision instead of after it is ready. Used when this PC
+ // already ran both (an update or a rollback): the bots are back at their tables within seconds and check/fold
+ // until PDecision answers. A first installation still waits, because its PDecision may sync resources for an hour.
+ static async Task Start(Apps apps,Manifest? expected=null,bool workerFirst=false){
   Directory.CreateDirectory(Path.Combine(C.Root,"runs"));
   var decision=Owned(apps.DecisionPid,apps.DecisionStarted,apps.DecisionExe);
   if(decision==null){decision=Launch(apps.DecisionExe,apps.DecisionCwd,[]);apps.DecisionPid=decision.Id;apps.DecisionStarted=decision.StartTime.ToUniversalTime().Ticks;Save(StateFile,apps);}
+  Process? worker=null;
+  void StartWorker(){
+   worker=Owned(apps.WorkerPid,apps.WorkerStarted,apps.WorkerProcessExe??apps.WorkerExe);
+   if(worker!=null)return;
+   var output=Under(Path.Combine(C.Root,"runs",DateTime.UtcNow.ToString("yyyyMMdd-HHmmss")+"-"+Guid.NewGuid().ToString("N")[..6]),C.Root);Directory.CreateDirectory(output);
+   var args=apps.WorkerArgs.ToList();var index=args.IndexOf("--output");if(index>=0&&index+1<args.Count){args[index+1]=output;}else{args.Add("--output");args.Add(output);}
+   apps.WorkerOutput=output;apps.WorkerArgs=args.ToArray();worker=Launch(apps.WorkerExe,apps.WorkerCwd,args);apps.WorkerProcessExe=apps.WorkerExe;apps.WorkerPid=worker.Id;apps.WorkerStarted=worker.StartTime.ToUniversalTime().Ticks;Save(StateFile,apps);
+  }
+  if(workerFirst){StartWorker();Log("PokerController started without waiting for PDecision.");}
   try{await DecisionHealth(decision,expected?.PdecisionVersion);}
   catch(Exception error) when(error is TimeoutException or InvalidOperationException){
    // A PDecision that failed or never became ready stays alive; without this the next start reuses the same
@@ -205,20 +232,15 @@ static class Program {
    if(!decision.HasExited){Log("Stopping the unhealthy PDecision so the next start launches a fresh one.");try{decision.Kill(true);}catch{}}
    throw;
   }
-  Log("PDecision is ready. Starting PokerController.");
-  var worker=Owned(apps.WorkerPid,apps.WorkerStarted,apps.WorkerProcessExe??apps.WorkerExe);
-  if(worker==null){
-   var output=Under(Path.Combine(C.Root,"runs",DateTime.UtcNow.ToString("yyyyMMdd-HHmmss")+"-"+Guid.NewGuid().ToString("N")[..6]),C.Root);Directory.CreateDirectory(output);
-   var args=apps.WorkerArgs.ToList();var index=args.IndexOf("--output");if(index>=0&&index+1<args.Count){args[index+1]=output;}else{args.Add("--output");args.Add(output);}
-   apps.WorkerOutput=output;apps.WorkerArgs=args.ToArray();worker=Launch(apps.WorkerExe,apps.WorkerCwd,args);apps.WorkerProcessExe=apps.WorkerExe;apps.WorkerPid=worker.Id;apps.WorkerStarted=worker.StartTime.ToUniversalTime().Ticks;Save(StateFile,apps);
-  }
+  Log(workerFirst?"PDecision is ready.":"PDecision is ready. Starting PokerController.");
+  StartWorker();
   var deadline=DateTime.UtcNow.AddMinutes(5);var status=Path.Combine(apps.WorkerOutput,"status.json");
   while(DateTime.UtcNow<deadline){
-   EnsureRunning(worker,"PokerController");
+   EnsureRunning(worker!,"PokerController");
    if(File.Exists(status)){
     try{var json=JsonDocument.Parse(File.ReadAllText(status)).RootElement;if(expected==null||(json.TryGetProperty("controller_version",out var v)&&v.GetString()==expected.ControllerVersion))return;}catch{}
    }
-   await Task.Delay(2000);
+   await Task.Delay(500);
   }
   throw new TimeoutException("PokerController did not publish a healthy startup status.");
  }
@@ -235,7 +257,7 @@ static class Program {
    if(File.Exists(Path.Combine(C.Root,"config","pdecision.protected")))File.WriteAllText(Path.Combine(target.DecisionCwd,"appsettings.json"),"{}");
    else {if(!File.Exists(settings))throw new InvalidOperationException("Machine-specific PDecision settings are missing.");File.Copy(settings,Path.Combine(target.DecisionCwd,"appsettings.json"),true);}
    Save(StateFile,target);await Report(job,"verifying");Save(OperationFile,new Operation(job.Id,previous,target,"verifying"));
-   await Start(target,manifest);
+   await Start(target,manifest,workerFirst:!string.IsNullOrEmpty(previous.DecisionExe));
    try{await Report(job,"resuming",manifest:manifest);}
    catch(Exception error) when(error is HttpRequestException or TaskCanceledException){
     Save(OperationFile,new Operation(job.Id,previous,target,"awaiting_resume"));
@@ -253,7 +275,7 @@ static class Program {
      Log("Initial installation kept installed; supervision continues.");return;
     }
     // Never install a second release over an unverified first attempt.
-    await Stop(target);Save(StateFile,previous);await Start(previous);
+    await Stop(target);Save(StateFile,previous);await Start(previous,workerFirst:true);
     await Report(job,"rolled_back","The update failed; the previous applications are healthy again. "+error.Message.Split('?')[0]);
     File.Delete(OperationFile);Log("Rolled back to the previous application pair.");
    }catch(Exception rollback){
@@ -310,6 +332,20 @@ static class Program {
   try{if(File.Exists(path)&&Guid.TryParse(Read<string>(path),out var saved))return saved.ToString();}catch{}
   var fresh=Guid.NewGuid().ToString();try{Save(path,fresh);}catch{}return fresh;
  }
+ // Waits for the normal check interval, or less when a managed application exits: a crash is restarted at once
+ // instead of at the next check. A longer backoff delay (an application that keeps stopping) is always waited out.
+ static async Task UntilExitOr(TimeSpan delay){
+  var waits=new List<Task>{Task.Delay(delay)};
+  try{
+   if(File.Exists(StateFile)){
+    var active=Read<Apps>(StateFile);
+    foreach(var process in new[]{Owned(active.DecisionPid,active.DecisionStarted,active.DecisionExe),Owned(active.WorkerPid,active.WorkerStarted,active.WorkerProcessExe??active.WorkerExe)})
+     if(process!=null)waits.Add(process.WaitForExitAsync());
+   }
+  }catch{}
+  if(delay<=SuperviseEvery){await Task.WhenAny(waits);return;}
+  await waits[0];
+ }
  static string SupervisionFile=>Path.Combine(C.Root,"supervision.json");
  // Its own loop: a long release download or a slow control-plane answer no longer delays a restart.
  static async Task SupervisionLoop(){
@@ -327,7 +363,7 @@ static class Program {
      }
     }finally{StateLock.Release();}
    }catch(Exception error){Log("Supervision failed: "+error.Message);delay=TimeSpan.FromSeconds(60);}
-   await Task.Delay(delay);
+   await UntilExitOr(delay);
   }
  }
  // Run by the log collector bundled in every release: an older installed updater is replaced by this one, so

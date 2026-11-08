@@ -12,6 +12,9 @@ log = logging.getLogger(__name__)
 # seconds. Requests that never reached a working PDecision are retried for this long; anything else (a timeout or
 # a dropped connection after the request was sent) is not, because PDecision may already have processed it.
 UNAVAILABLE_RETRY_SECONDS = 12
+# A worker started before its PDecision (an update restarts PokerController first) waits this long for PDecision
+# to become ready before a join fails.
+READY_WAIT_SECONDS = 60
 
 from .sites import EVENBET, HAND_HISTORY
 
@@ -20,6 +23,20 @@ class PDecision:
     def __init__(self, url="http://127.0.0.1:5005", api_key="", client: httpx.AsyncClient | None = None):
         self.http = client or httpx.AsyncClient(base_url=url, timeout=45,
             headers={"X-Api-Key": api_key} if api_key else {})
+        # Set once a request found PDecision unreachable for the whole retry window: later requests make a single
+        # attempt, so the bots check/fold at once instead of waiting on every action. The first answer clears it.
+        self.unavailable = False
+
+    async def wait_ready(self, seconds: float | None = None) -> dict:
+        """PDecision's health once it is ready; waits while it is starting (refused, 503 or not ready yet)."""
+        deadline = time.monotonic() + (READY_WAIT_SECONDS if seconds is None else seconds)
+        while True:
+            try:
+                return await self.health()
+            except (httpx.ConnectError, httpx.HTTPStatusError, RuntimeError):
+                if time.monotonic() >= deadline:
+                    raise
+            await asyncio.sleep(1)
 
     async def health(self) -> dict:
         response = await self.http.get("/api/health")
@@ -32,7 +49,7 @@ class PDecision:
     async def require_hand_history(self, platform: int = EVENBET) -> dict:
         """PDecision must save this platform's hands under its own casino and platform, uploaded to Azure."""
         casino, names = HAND_HISTORY[platform]
-        body = await self.health()
+        body = await self.wait_ready()
         # A PDecision serving several poker sites lists them all; an older one reports its only casino.
         served = body.get("casinos") or [{"casino": body.get("handHistoryCasino"), "platform": body.get("handHistoryPlatform")}]
         if not any(c.get("casino") == casino and c.get("platform") in names for c in served):
@@ -45,17 +62,27 @@ class PDecision:
         return await self.require_hand_history(EVENBET)
 
     async def post(self, path: str, body: dict, retry_seconds: float | None = None) -> httpx.Response:
-        deadline = time.monotonic() + (UNAVAILABLE_RETRY_SECONDS if retry_seconds is None else retry_seconds)
+        if retry_seconds is None:
+            retry_seconds = 0 if self.unavailable else UNAVAILABLE_RETRY_SECONDS
+        deadline = time.monotonic() + retry_seconds
         delay = 0.25
         while True:
             try:
                 response = await self.http.post(path, json=body)
+                if response.status_code != 503:
+                    self.unavailable = False
                 if response.status_code != 503 or time.monotonic() >= deadline:
+                    if response.status_code == 503 and not self.unavailable:
+                        self.unavailable = True
+                        log.warning("PDecision is not ready; the bots check/fold until it answers")
                     response.raise_for_status()
                     return response
                 reason = "not ready (503)"
             except httpx.ConnectError as exc:
                 if time.monotonic() >= deadline:
+                    if not self.unavailable:
+                        self.unavailable = True
+                        log.warning("PDecision is unreachable; the bots check/fold until it answers")
                     raise
                 reason = f"unreachable ({type(exc).__name__})"
             log.warning("PDecision %s for %s; retrying", reason, path)

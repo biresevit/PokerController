@@ -97,6 +97,8 @@ def main() -> None:
     parser.add_argument("--output", default="artifacts/azure-worker")
     parser.add_argument("--leave-on-exit", action="store_true",
         help="Leave all poker tables before stopping. By default seats are preserved for restart recovery.")
+    parser.add_argument("--warm-up", action="store_true",
+        help="Load the program and exit. The updater runs this once after downloading a release, so its real start is fast.")
     args = parser.parse_args()
     scheduler_root = Path(__file__).resolve().parents[2] / "ScheduleController"
     if scheduler_root.is_dir():
@@ -104,6 +106,9 @@ def main() -> None:
     from schedule_controller.pilot import Pilot
     from schedule_controller.pilot_repository import machine_sites
     from poker_controller.system_metrics import sample as machine_metrics,POKER_CONTROLLER_VERSION
+    if args.warm_up:
+        import poker_controller.bluffpoker, poker_controller.client, schedule_controller.bluffpoker_tournaments  # noqa: F401
+        return
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
     if (output / "stop").exists():
