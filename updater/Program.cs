@@ -36,7 +36,7 @@ static class Program {
  static string LogFile=>Path.Combine(C.Root,"updater.log");
  // Serializes supervision restarts with intentional stops and installs.
  static readonly SemaphoreSlim StateLock=new(1,1);
- const string AgentVersion="1.0.18";
+ const string AgentVersion="1.0.19";
  // A stopped application is noticed within this time (BluffPoker keeps a disconnected seat ~29 s).
  static readonly TimeSpan SuperviseEvery=TimeSpan.FromSeconds(10);
  static void Log(string value){lock(Api)File.AppendAllText(LogFile,$"{DateTime.UtcNow:O} {value.Split('?')[0]}{Environment.NewLine}");}
@@ -250,13 +250,13 @@ static class Program {
   if(File.Exists(OperationFile)){
    var saved=Read<Operation>(OperationFile);if(saved.TaskId!=job.Id)throw new InvalidOperationException("A different update needs recovery.");previous=saved.Previous;target=saved.Target;var active=Read<Apps>(StateFile);if(active.ReleaseId==job.ReleaseId)target=active;
   }
-  if(job.Status!="verifying")await Report(job,"installing");Save(OperationFile,new Operation(job.Id,previous,target,"installing"));
+  if(job.Status!="verifying"){await Report(job,"installing");Log("Installation approved by the control plane.");}Save(OperationFile,new Operation(job.Id,previous,target,"installing"));
   try{
    if(job.Status!="verifying")await Stop(previous);
    var settings=Path.Combine(C.Root,"config","pdecision.json");
    if(File.Exists(Path.Combine(C.Root,"config","pdecision.protected")))File.WriteAllText(Path.Combine(target.DecisionCwd,"appsettings.json"),"{}");
    else {if(!File.Exists(settings))throw new InvalidOperationException("Machine-specific PDecision settings are missing.");File.Copy(settings,Path.Combine(target.DecisionCwd,"appsettings.json"),true);}
-   Save(StateFile,target);await Report(job,"verifying");Save(OperationFile,new Operation(job.Id,previous,target,"verifying"));
+   Save(StateFile,target);await Report(job,"verifying");Log("Starting the new applications.");Save(OperationFile,new Operation(job.Id,previous,target,"verifying"));
    await Start(target,manifest,workerFirst:!string.IsNullOrEmpty(previous.DecisionExe));
    try{await Report(job,"resuming",manifest:manifest);}
    catch(Exception error) when(error is HttpRequestException or TaskCanceledException){
@@ -439,7 +439,16 @@ static class Program {
      if(job.Status is "preparing" or "draining"){
       await Stage(job,manifest);await Report(job,"staged");
      }else if(!job.Paused&&job.Status=="forcing"){
-      await StateLock.WaitAsync();try{await KillNow(Read<Apps>(StateFile));}finally{StateLock.Release();}await Report(job,"force_stopped");
+      var version=await Stage(job,manifest);
+      await StateLock.WaitAsync();
+      try{
+       await KillNow(Read<Apps>(StateFile));Log("Applications stopped for the immediate update.");
+       await Report(job,"force_stopped");
+       // The control plane moves the task to 'stopping' in that same request: install now instead of on the next
+       // poll. The poker sites keep the seats only briefly (BluffPoker ~29 s, EvenBet less); waiting for the next
+       // round of polls left the bots away ~30 s and EvenBet stood them up (MSI, 2026-11-08).
+       await Install(job with {Status="stopping"},manifest,version);
+      }finally{StateLock.Release();}
      }else if(!job.Paused&&job.Status=="reconciling"){
       await Report(job,"reconciling");await StateLock.WaitAsync();try{await StopWorker(Read<Apps>(StateFile));}finally{StateLock.Release();}await Report(job,"reconciled");
      }else if(!job.Paused&&(job.Status is "stopping" or "installing" or "verifying")){
