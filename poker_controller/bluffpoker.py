@@ -658,6 +658,15 @@ class Hub:
         return await self.authed("GET", f"/player/tournaments/{quote(str(tournament_id), safe='')}/state",
                                  topic="tournament-state")
 
+    async def tournament_rebuy(self, tournament_id, key: str):
+        """Seated or busted rebuy. `key` names the purchase: a retry with the same key is never charged twice."""
+        return await self.authed("POST", f"/player/tournaments/{quote(str(tournament_id), safe='')}/rebuy",
+                                 idempotency=key, topic="tournament-rebuy")
+
+    async def tournament_addon(self, tournament_id, key: str):
+        return await self.authed("POST", f"/player/tournaments/{quote(str(tournament_id), safe='')}/addon",
+                                 idempotency=key, topic="tournament-addon")
+
     async def close(self):
         await self.http.aclose()
 
@@ -1291,6 +1300,12 @@ class BluffPokerClient:
 
     async def tournament_state(self, tournament_id):
         return await self.hub.tournament_state(tournament_id)
+
+    async def tournament_rebuy(self, tournament_id, key: str):
+        return await self.hub.tournament_rebuy(tournament_id, key)
+
+    async def tournament_addon(self, tournament_id, key: str):
+        return await self.hub.tournament_addon(tournament_id, key)
 
     # -- lifecycle
 
