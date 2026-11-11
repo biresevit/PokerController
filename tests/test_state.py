@@ -207,3 +207,10 @@ def test_call_with_nothing_to_call_is_the_free_check(state):
     blind = copy.deepcopy(state)
     blind["aa"] = [1, 2, 9, 15]
     assert decision_to_play({"Action": 1, "BetSize": 2}, blind, 2) == (2, 0)
+
+
+def test_tournament_buy_in_is_sent_only_when_known(state):
+    mapper=HandStateMapper(73582719,'monica')
+    assert mapper.convert(state,{'tournament':{'format':'MTT','buy_in':22.5}})['TournamentBuyIn']==22.5
+    assert 'TournamentBuyIn' not in mapper.convert(state,{'tournament':{'format':'MTT','buy_in':None}})
+    assert 'TournamentBuyIn' not in mapper.convert(state,{})

@@ -140,7 +140,7 @@ class HandStateMapper:
         tournament = table.get("tournament") or {}
         table_type = {"SNG": 2, "MTT": 3}.get(tournament.get("format"), 1)
         ante = tournament.get("ante")
-        return {
+        request = {
             "TableID": str(table_id), "TableName": table.get("n", str(table_id)), "TableHandle": 0,
             "HandID": str(hand_id), "IsNewHand": is_new,
             "IsMyTurn": turn_key(state, hero) is not None,
@@ -159,6 +159,12 @@ class HandStateMapper:
             "PlayersLeft": int(tournament.get("players_left") or 0), "PlayersTotal": int(tournament.get("players_total") or 0),
             "NumPlacesPaid": int(tournament.get("places_paid") or 0),
         }
+        # The tournament's buy-in (table currency, from the lobby): PDecision's minimum buy-in of card sharing and the
+        # solver strategy. Not part of PDecision's HandState, so only sent when known.
+        buy_in = tournament.get("buy_in")
+        if buy_in:
+            request["TournamentBuyIn"] = float(buy_in)
+        return request
 
 
 def decision_to_play(decision: dict, state: dict, hero: int, *, scale: int = 100) -> tuple[int, int]:
