@@ -1,9 +1,30 @@
-"""Evenbet table chat, using the same Chat wire format as HopperV2."""
+"""Normalize live table chat for the shared inbox."""
 from __future__ import annotations
 from datetime import datetime, timezone
 import hashlib
 import json
 import uuid
+
+
+def incoming_bluffpoker_chat(event, received=None):
+    """Stable identity across table subscribers; BluffPoker has no history endpoint."""
+    table, player, author, body = (event.get(k) for k in ('tableId','playerId','screenName','text'))
+    if not all(isinstance(value,str) and value.strip() for value in (table,player,author,body)):
+        return None
+    received=received or datetime.now(timezone.utc)
+    posted=None
+    try:
+        if isinstance(event.get('at'),(int,float)) and not isinstance(event['at'],bool):
+            posted=datetime.fromtimestamp(event['at']/1000,timezone.utc)
+    except (ValueError,OverflowError,OSError):
+        pass
+    # A broadcast's server timestamp identifies it across accounts and machines.
+    # Without one, retain each occurrence rather than merging repeated messages.
+    identity=[table,player,body,event.get('at') if posted else str(uuid.uuid4())]
+    key=hashlib.sha256(json.dumps(identity,ensure_ascii=False).encode()).hexdigest()
+    return {'table_id':table,'event_key':key,'author':author.encode('utf-16-le','replace')[:200].decode('utf-16-le','ignore'),
+            'body':body.encode('utf-16-le','replace')[:4000].decode('utf-16-le','ignore'),
+            'posted':posted,'received':received,'historical':False}
 
 
 def incoming_chat(event, received=None):

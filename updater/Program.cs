@@ -36,7 +36,7 @@ static class Program {
  static string LogFile=>Path.Combine(C.Root,"updater.log");
  // Serializes supervision restarts with intentional stops and installs.
  static readonly SemaphoreSlim StateLock=new(1,1);
- const string AgentVersion="1.0.19";
+ const string AgentVersion="1.0.20";
  // A stopped application is noticed within this time (BluffPoker keeps a disconnected seat ~29 s).
  static readonly TimeSpan SuperviseEvery=TimeSpan.FromSeconds(10);
  static void Log(string value){lock(Api)File.AppendAllText(LogFile,$"{DateTime.UtcNow:O} {value.Split('?')[0]}{Environment.NewLine}");}
@@ -63,7 +63,19 @@ static class Program {
    var health=await response.Content.ReadFromJsonAsync<JsonElement>();return health.GetProperty("status").GetString()=="ready";
   }catch{return false;}
  }
- static async Task<Poll> Poll()=>await Request<Poll>("poll",new{instance_id=Instance,agent_version=AgentVersion,apps_running=await RuntimeHealthy(),needs_install=!File.Exists(StateFile)&&!File.Exists(OperationFile)});
+ static readonly SemaphoreSlim PollLock=new(1,1);
+ static Poll? LastPoll;
+ static long LastPollAt;
+ static async Task<Poll> Poll(){
+  // The heartbeat and installation loops share successful polls. A slow download still has an
+  // independent heartbeat, without two simultaneous requests for the same machine.
+  await PollLock.WaitAsync();
+  try{
+   if(LastPoll!=null&&Stopwatch.GetElapsedTime(LastPollAt)<TimeSpan.FromSeconds(5))return LastPoll;
+   var reply=await Request<Poll>("poll",new{instance_id=Instance,agent_version=AgentVersion,apps_running=await RuntimeHealthy(),needs_install=!File.Exists(StateFile)&&!File.Exists(OperationFile)});
+   LastPoll=reply;LastPollAt=Stopwatch.GetTimestamp();return reply;
+  }finally{PollLock.Release();}
+ }
  static Task<JsonElement> Report(Job job,string phase,string detail="",Manifest? manifest=null)=>Request<JsonElement>("report",new{instance_id=Instance,agent_version=AgentVersion,task_id=job.Id,phase,detail,pdecision_version=manifest?.PdecisionVersion,controller_version=manifest?.ControllerVersion});
  static Manifest Verify(Job job){
   byte[] bytes=Encoding.UTF8.GetBytes(job.Manifest),signature=Convert.FromBase64String(job.Signature);
@@ -462,7 +474,7 @@ static class Program {
      try{await Report(job,"failed","The release could not be verified. Existing applications were not stopped. "+error.Message.Split('?')[0]);}catch{}
     }
    }
-   await Task.Delay(5000);
+   await Task.Delay(job==null?15000:5000);
   }
  }
 }

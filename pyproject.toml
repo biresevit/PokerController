@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "poker-controller"
 version = "0.1.0"
 requires-python = ">=3.11"
-dependencies = ["websockets>=15,<17", "httpx>=0.28,<1", "pyodbc>=5,<6", "tzdata>=2025.2", "psutil>=7,<8"]
+dependencies = ["websockets>=15,<17", "httpx>=0.28,<1", "certifi>=2025.1.31", "pyodbc>=5,<6", "tzdata>=2025.2", "psutil>=7,<8"]
 
 [project.optional-dependencies]
 test = ["pytest>=8", "pytest-asyncio>=0.24"]

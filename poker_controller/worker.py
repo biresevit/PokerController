@@ -49,7 +49,9 @@ async def run_sites(settings, pilot_factory, machine_sites, *, poll=SITE_POLL_SE
         await pilot_factory(args).run_cloud_worker()
 
     def start(site):
-        output = root if not runs else root / f"site-{site}"
+        # Keep the primary site's status.json at the root after a failed startup;
+        # the updater monitors that path to verify installation and ongoing health.
+        output = Path(site_args[site].output) if site in site_args else root if not runs else root / f"site-{site}"
         args = SimpleNamespace(**{**vars(settings), "site_id": site, "output": str(output),
                                   "stop_file": str(stop_file), "stop_event": asyncio.Event()})
         runs[site] = (asyncio.create_task(play(site, args)), args.stop_event)

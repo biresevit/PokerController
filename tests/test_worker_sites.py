@@ -62,6 +62,21 @@ async def test_the_worker_plays_its_own_site_when_the_site_list_cannot_be_read(t
     assert [s[0] for s in FakePilot.started] == [5]
 
 
+async def test_primary_site_keeps_updater_status_path_after_startup_failure(tmp_path):
+    FakePilot.started, FakePilot.failures = [], {1: 1}
+    settings = SimpleNamespace(site_id=1, machine_id=7, output=str(tmp_path / 'run'))
+    (tmp_path / 'run').mkdir()
+
+    async def stop_after_restart():
+        while len(FakePilot.started) < 2:
+            await asyncio.sleep(.01)
+        (tmp_path / 'run' / 'stop').write_text('')
+
+    await asyncio.wait_for(asyncio.gather(
+        run_sites(settings, FakePilot, lambda _: [1], poll=.05, restart=.01), stop_after_restart()), 10)
+    assert FakePilot.started == [(1, 'run', '[site 1] ')] * 2
+
+
 
 def test_a_site_that_keeps_failing_backs_off():
     from poker_controller.worker import restart_delay

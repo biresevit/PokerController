@@ -31,6 +31,7 @@ import logging
 import math
 import os
 import re
+import ssl
 import time
 import uuid
 from collections import deque
@@ -39,6 +40,7 @@ from pathlib import Path
 from urllib.parse import quote, urlencode, urlsplit, urlunsplit, parse_qsl
 
 import httpx
+import certifi
 from websockets.asyncio.client import connect as ws_connect
 
 from . import token_store
@@ -350,7 +352,7 @@ def game_state(st: dict, player_id: str, *, key, now: float | None = None) -> di
         "t": {"tr": left, "tb": 0} if left is not None else {},
         # Engine facts the client needs to turn an EvenBet action back into a BluffPoker one.
         "bp": {"hand": hand, "game": game, "tournament": tournament, "unit": unit, "base": base,
-               "ante": _cents(ante) // unit,
+               "ante": _cents(ante) // unit, "chat_enabled": st.get("chatEnabled", True),
                "legal": legal, "my_bet": my_bet, "stack": stack, "street_max": street_max, "phase": phase},
     }
 
@@ -687,6 +689,7 @@ class TableSocket:
         self.clock_results = 0
         self.unproven = False
         self.commands: dict[str, asyncio.Future] = {}
+        self.chat_pending: tuple[str, asyncio.Future] | None = None
         self.leave_ack: asyncio.Future | None = None
         self.leave_done: asyncio.Future | None = None
         self.leaving = self.closed = False
@@ -704,6 +707,7 @@ class TableSocket:
         game = {v: k for k, v in GAMES.items()}.get(info.get("g"))
         url = await self.client.hub.endpoint(self.wire, game)
         self.ws = await self.client.ws_connect(url, origin=self.client.settings.origin, open_timeout=timeout,
+                                               ssl=ssl.create_default_context(cafile=certifi.where()),
                                                ping_interval=20, ping_timeout=20, max_size=16 * 1024 * 1024)
         self.receiver = asyncio.create_task(self.receive(), name=f"bluffpoker-{self.wire}")
         await self.send({"type": "register", "playerId": self.client.player_id, "tableId": self.wire})
@@ -752,6 +756,8 @@ class TableSocket:
                 self.first_state.set()
         elif kind == "actionResult":
             self.on_result(m)
+        elif kind == "chatMessage":
+            self.client.on_chat_message(self, m)
         elif kind == "playerAutoFolded" and m.get("playerId") == self.client.player_id:
             # The engine's clock acted for us; its actionResult is not an answer to any write of ours.
             if self.results:
@@ -767,7 +773,15 @@ class TableSocket:
         elif kind == "error":
             code = str(m.get("code") or "ENGINE_ERROR")
             log.warning("BluffPoker engine error at table %s: %s", self.wire, code)
-            if code == "TOURNAMENT_NO_LEAVE":
+            if code.startswith("CHAT_"):
+                if self.chat_pending and not self.chat_pending[1].done():
+                    self.chat_pending[1].set_exception(ValueError({
+                        'CHAT_DISABLED':'Chat is disabled at this table.',
+                        'CHAT_NOT_SEATED':'The selected bot is no longer seated at this table.',
+                        'CHAT_BANNED':'The selected bot is chat-banned at this table.',
+                        'CHAT_RATE_LIMIT':'The table rejected the message rate. Try again later.',
+                    }.get(code,code)))
+            elif code == "TOURNAMENT_NO_LEAVE":
                 self.on_leave({"type": "leaveTableResult", "ok": False, "error": code})
             elif code in TERMINAL_ERRORS:
                 self.lost(BluffPokerError(code, topic="engine", terminal=True))
@@ -876,6 +890,8 @@ class TableSocket:
             await self.send({"type": "ping"})
 
     def lost(self, exc: Exception):
+        if self.chat_pending and not self.chat_pending[1].done():
+            self.chat_pending[1].set_exception(exc)
         for future in [*self.results, *self.commands.values(), self.leave_ack, self.leave_done]:
             if future and not future.done():
                 future.set_exception(exc)
@@ -887,6 +903,8 @@ class TableSocket:
         if self.closed:
             return
         self.closed = True
+        if self.chat_pending and not self.chat_pending[1].done():
+            self.chat_pending[1].set_exception(ConnectionError('Table connection closed before chat confirmation'))
         current = asyncio.current_task()
         for task in (self.pinger, self.receiver):
             if task and task is not current:
@@ -945,6 +963,7 @@ class BluffPokerConnection:
 class BluffPokerClient:
     """One bot account on BluffPoker, with EvenBetClient's interface (see the module docstring)."""
     platform = BLUFFPOKER
+    supports_chat_history = False
 
     def __init__(self, settings: BluffPokerSettings, *, hub: Hub | None = None, ws_connect=ws_connect):
         self.settings = settings
@@ -964,8 +983,10 @@ class BluffPokerClient:
         self.sockets: dict = {}
         self.changed = asyncio.Event()
         self.auth = ""
-        self.chat_events: asyncio.Queue = asyncio.Queue(maxsize=1)
+        self.chat_events: asyncio.Queue = asyncio.Queue(maxsize=2000)
         self.chat_overflow = False
+        self.chat_lock = asyncio.Lock()
+        self.next_chat_at = 0.0
         self.run_id = uuid.uuid4().hex[:12]
         self.leave_counts: dict = {}
         self.buy_in_warned: set = set()
@@ -1282,13 +1303,51 @@ class BluffPokerClient:
             raise BluffPokerError(str(reply.get("error") or "ACTION_REJECTED"), topic="actionResult")
         return reply
 
-    # -- chat (no player chat route in the connector)
+    # -- chat (live broadcasts on the existing table socket; never auto-replied to)
+
+    def on_chat_message(self, sock: TableSocket, message: dict):
+        if message.get('tableId') != sock.wire:
+            return
+        from .chat import incoming_bluffpoker_chat
+        item=incoming_bluffpoker_chat(message)
+        if not item:
+            return
+        if (message.get('playerId')==self.player_id and sock.chat_pending
+                and message.get('text')==sock.chat_pending[0] and not sock.chat_pending[1].done()):
+            sock.chat_pending[1].set_result(None)
+        # Own echoes confirm explicit operator sends and appear as bot messages in the inbox.
+        # No chat event triggers an automatic reply.
+        try:self.chat_events.put_nowait(item)
+        except asyncio.QueueFull:self.chat_overflow=True
 
     async def read_chat(self, table_id):
+        # Subscription is already live with the table socket. There is no server history.
         return None
 
     async def send_chat(self, table_id, text: str):
-        raise ValueError("Table chat is not available on BluffPoker")
+        if not isinstance(text,str) or not text.strip() or '\x00' in text or len(text.strip().encode('utf-16-le'))>600:
+            raise ValueError('A BluffPoker chat message must contain 1 to 300 characters')
+        key=table_key(table_id)
+        async with self.chat_lock:
+            await asyncio.sleep(max(0,self.next_chat_at-time.monotonic()))
+            state=self.states.get(key,{})
+            if self.hero_seat(state) is None:
+                raise ValueError('The selected bot is no longer seated at this table')
+            if state.get('bp',{}).get('chat_enabled') is False:
+                raise ValueError('Chat is disabled at this table')
+            try:sock=self.socket(key)
+            except BluffPokerError as exc:
+                raise ValueError('The selected bot is not connected to this table') from exc
+            future=asyncio.get_running_loop().create_future()
+            sock.chat_pending=(text.strip(),future)
+            try:
+                if not await sock.send({'type':'chat','tableId':sock.wire,'text':text.strip()}):
+                    raise ConnectionError('Chat write was not confirmed')
+                self.next_chat_at=time.monotonic()+.85
+                await asyncio.wait_for(future,8)
+            finally:
+                sock.chat_pending=None
+                if not future.done():future.cancel()
 
     # -- tournaments (REST; the server seats the player at state.myTableId)
 

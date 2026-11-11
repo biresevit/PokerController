@@ -7,7 +7,7 @@ using System.Text.RegularExpressions;
 using System.Diagnostics;
 
 static class DiagnosticsCollector {
- internal const string Version="1.0.15";
+ internal const string Version="1.0.16";
  static readonly JsonSerializerOptions Json=new(JsonSerializerDefaults.Web);
  record Work(string Id,string Claim,int Hours,
   [property:System.Text.Json.Serialization.JsonPropertyName("upload_url")]string UploadUrl,
@@ -21,11 +21,21 @@ static class DiagnosticsCollector {
  }
  internal static async Task Run(Config c,int? parent=null){
   using var owner=parent.HasValue?Process.GetProcessById(parent.Value):null;
+  // Both the installed updater and the bundled helper can run on the same PC.
+  // Hold an OS file handle across awaits so only one polls for diagnostic work.
+  FileStream? lease=null;
+  Directory.CreateDirectory(c.Root);
+  while(lease==null&&(owner==null||!owner.HasExited)){
+   try{lease=new FileStream(Path.Combine(c.Root,"diagnostics.collector.lock"),FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None);}
+   catch(IOException){await Task.Delay(15000);}
+  }
+  if(lease==null)return;
+  using var held=lease;
   while(owner==null||!owner.HasExited){
    try{await Once(c);}catch(Exception error){
     try{File.AppendAllText(Path.Combine(c.Root,"diagnostics.log"),$"{DateTime.UtcNow:O} Collection retry: {error.GetType().Name}"+(error is HttpRequestException http?$" HTTP {(int?)http.StatusCode}":"")+"\n");}catch{}
    }
-   await Task.Delay(10000);
+   await Task.Delay(15000);
   }
  }
  static async Task Once(Config c){

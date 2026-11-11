@@ -31,6 +31,32 @@ def settings(**changes):
     return bp.BluffPokerSettings(**values)
 
 
+@pytest.mark.asyncio
+async def test_engine_socket_uses_packaged_roots_and_keeps_certificate_verification():
+    import ssl
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    captured = {}
+
+    class StopBeforeNetwork(Exception):
+        pass
+
+    async def connect(url, **kwargs):
+        captured.update(kwargs)
+        raise StopBeforeNetwork()
+
+    client = SimpleNamespace(tables={}, settings=settings(),
+                             hub=SimpleNamespace(endpoint=AsyncMock(return_value='wss://engine.test/ws')),
+                             ws_connect=connect)
+    socket = bp.TableSocket(client, TABLE, TABLE)
+    with pytest.raises(StopBeforeNetwork):
+        await socket.open()
+    context = captured['ssl']
+    assert context.verify_mode == ssl.CERT_REQUIRED
+    assert context.check_hostname
+    assert context.cert_store_stats()['x509_ca'] > 0
+
+
 def state(name):
     return bp.game_state(copy.deepcopy(DATA["states"][name]), PID, key=TABLE)
 

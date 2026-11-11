@@ -215,7 +215,7 @@ class SetupForm:Form {
    var pending=Path.Combine(local,"request.json");
    if(File.Exists(pending)){var saved=JsonDocument.Parse(File.ReadAllText(pending)).RootElement;if(saved.GetProperty("expires").GetDateTimeOffset()>DateTimeOffset.UtcNow){requestId=saved.GetProperty("id").GetString();pairing.Text=saved.GetProperty("code").GetString();pairing.Visible=true;status.Text="Waiting for administrator approval...";timer.Start();return;}}
    var reply=await Post("request",new{hostname=Environment.MachineName,macs=Addresses(),public_key=key.ExportSubjectPublicKeyInfoPem()});
-   File.WriteAllText(pending,reply.GetRawText());requestId=reply.GetProperty("id").GetString();pairing.Text=reply.GetProperty("code").GetString();pairing.Visible=true;status.Text="Waiting for administrator approval. The code expires in 30 minutes.";timer.Start();
+   File.WriteAllText(pending,reply.GetRawText());requestId=reply.GetProperty("id").GetString();pairing.Text=reply.GetProperty("code").GetString();pairing.Visible=true;status.Text="Waiting for administrator approval. The code expires in 2 hours.";timer.Start();
   }catch(Exception error){status.Text=error.Message;start.Enabled=true;}
  }
  object Proof(string action){var timestamp=DateTimeOffset.UtcNow.ToUnixTimeSeconds();var nonce=Guid.NewGuid().ToString("N");var signature=Convert.ToBase64String(key.SignData(Encoding.UTF8.GetBytes($"{requestId}:{action}:{timestamp}:{nonce}"),HashAlgorithmName.SHA256,RSASignaturePadding.Pss));return new{id=requestId,timestamp,nonce,signature};}
