@@ -9,7 +9,7 @@ import httpx
 from .client import EvenBetClient  # or BluffPokerClient: the same interface
 from .decision import PDecision
 from .pacing import extra_seconds
-from .state import HandStateMapper, amount_scale, decision_to_play
+from .state import HandStateMapper, amount_scale, complete_final_frame, decision_to_play
 
 log = logging.getLogger(__name__)
 
@@ -87,7 +87,10 @@ class Bot:
                 if self.history_frames or (state.get("ts") == 1 and
                                            state.get("m", {}).get("r") == 1 and
                                            not state.get("d", {}).get("c")):
-                    self.history_frames.append(hs.copy())
+                    frame = hs.copy()
+                    if state.get("ts") == 3 and self.history_frames:
+                        frame = complete_final_frame(self.history_frames[-1], frame)
+                    self.history_frames.append(frame)
                 if state.get("ts") == 3:
                     if self.history_frames and any(hs["Winners"]):
                         try:

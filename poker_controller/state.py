@@ -167,6 +167,24 @@ class HandStateMapper:
         return request
 
 
+def complete_final_frame(previous: dict | None, final: dict) -> dict:
+    """The hand-history frame of a hand won without a showdown, as PDecision's builder needs it.
+
+    BluffPoker ends such a hand with an idle state: no board and no player dealt in, only the payout in the
+    stacks. The builder takes the street from the board and the folds from who left the hand, so it wrote the
+    fold to a river bet preflop (BluffPoker hand 1cc78d1e-...-9, 2026-11-12). The completed frame keeps the
+    hand's board and the winners in the hand. EvenBet's last frame already has both and is returned unchanged.
+    """
+    if not previous or any(final.get("InGame", [])) or not any(w > 0 for w in final.get("Winners", [])):
+        return final
+    frame = copy.deepcopy(final)
+    board, last_board = frame["Cards"][2:], previous["Cards"][2:]
+    if sum(1 for c in board if c) < sum(1 for c in last_board if c):
+        frame["Cards"] = frame["Cards"][:2] + list(last_board)
+    frame["InGame"] = [bool(was) and won > 0 for was, won in zip(previous["InGame"], frame["Winners"])]
+    return frame
+
+
 def decision_to_play(decision: dict, state: dict, hero: int, *, scale: int = 100) -> tuple[int, int]:
     """Convert a raise-to amount to additional protocol units using the input hand's scale."""
     kind = decision.get("Action")

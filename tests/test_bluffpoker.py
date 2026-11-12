@@ -477,3 +477,36 @@ def test_a_damaged_token_file_is_ignored(token_dir):
     bp.token_store.save("https://hub.test", "x@y", access="a", refresh="r", expires_at=time.time() + 60, player_id="p")
     next(token_dir.glob("*.bin")).write_bytes(b"garbage")
     assert bp.token_store.load("https://hub.test", "x@y") is None
+
+
+def test_hand_won_without_showdown_keeps_its_board_and_winner_in_the_last_history_frame():
+    """BluffPoker's idle state after the last fold has no board and nobody dealt in. The builder read that as a
+    preflop fold (hand 1cc78d1e-...-9, 2026-11-12); the completed frame keeps the flop and the winner."""
+    from poker_controller.state import complete_final_frame
+    mapper, table = HandStateMapper(PID, "guido66", BLUFFPOKER), {"n": "NLH 0,50/1"}
+    facing = mapper.convert(state("postflop_facing"), table)        # flop, pepe bet 1.50
+    over = copy.deepcopy(DATA["states"]["hand_over"])
+    over["handSeq"] = 25                                             # guido folds, pepe takes the 5.50 pot
+    for seat in over["seats"]:
+        if seat.get("screenName") == "guido66":
+            seat["stack"] = 173.5
+        elif seat.get("screenName") == "pepe":
+            seat["stack"] = 101
+    final = mapper.convert(bp.game_state(over, PID, key=TABLE), table)
+    assert final["Cards"][2:] == [""] * 5 and not any(final["InGame"])  # as BluffPoker sends it
+    pepe = final["Names"].index("pepe")
+    assert final["Winners"][pepe] == 5.5
+
+    done = complete_final_frame(facing, final)
+    assert done["Cards"][2:] == facing["Cards"][2:] and done["Cards"][2:5] == ["ah", "js", "9s"]
+    assert done["InGame"] == [i == pepe for i in range(len(done["InGame"]))]
+    assert done["Winners"] == final["Winners"] and done["Stacks"] == final["Stacks"]
+    assert final["Cards"][2:] == [""] * 5, "the frame received is not modified"
+
+
+def test_last_frame_that_already_has_the_hand_in_it_is_unchanged():
+    from poker_controller.state import complete_final_frame
+    previous = {"Cards": ["ah", "kd", "2c", "3d", "4h", "", ""], "InGame": [True, True]}
+    showdown = {"Cards": ["ah", "kd", "2c", "3d", "4h", "5s", "9c"], "InGame": [True, True], "Winners": [10, 0]}
+    assert complete_final_frame(previous, showdown) is showdown
+    assert complete_final_frame(None, {"Cards": [], "InGame": [False], "Winners": [1]})["InGame"] == [False]
