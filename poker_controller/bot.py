@@ -46,6 +46,11 @@ class Bot:
         # Called once per hand when the table lets the hero show cards after an uncontested win.
         self.on_show_offer=on_show_offer
         self.show_offer_hand=None
+        # Decision speed and missed actions (metrics.DecisionMetrics), shared by the PC's tables when the owner sets it.
+        self.metrics=getattr(decisions,'metrics',None)
+        if self.metrics is not None and hasattr(client,'metrics'):client.metrics=self.metrics
+        self.sitting_out=False
+        self.created=time.monotonic()
 
     async def process(self, state: dict):
         async with self.action_lock:
@@ -64,6 +69,14 @@ class Bot:
             if not self.busted and self.on_bust and not self.leaving:
                 self.busted = True
                 self.on_bust(self.table_id)
+        away = bool(seat.get("f", 0) & 1)
+        # Not in the first 30 s at a table: a fresh seat can show as sitting out until the sit-in is processed.
+        if away and not self.sitting_out and not self.busted and self.metrics is not None and not (
+                self.leaving or self.on_break or self.sit_out_requested or self.manual_hand == state.get("gi")
+                or time.monotonic() - self.created < 30):
+            # Sat out by the table although nothing planned it: the bot missed its turn.
+            self.metrics.missed("sit_out", self.client.settings.username, self.table_id)
+        self.sitting_out = away
         if seat.get("f", 0) & 1 and not self.busted:
             self.sit_out_requested = False
             await self.return_if_unintended(state)
@@ -144,6 +157,10 @@ class Bot:
             log.error("PDecision unavailable for table %s hand %s (%s); taking a free check or folding",
                       self.table_id, state["gi"], type(exc).__name__)
             decision = {"Action": 6, "Fallback": True}
+        if self.metrics is not None and not decision.get("Fallback"):
+            from .metrics import opponents_in_hand
+            self.metrics.decision(state.get("m", {}).get("r"), opponents_in_hand(state, hero),
+                                  (time.monotonic() - asked) * 1000)
         self.decision_hand = state["gi"]
         # A human needs time to see the dealt cards and to press the buttons (pacing.py). The turn is checked
         # again below, after the wait.

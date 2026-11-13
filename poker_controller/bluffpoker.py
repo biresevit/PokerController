@@ -772,6 +772,8 @@ class TableSocket:
             self.client.on_chat_message(self, m)
         elif kind == "playerAutoFolded" and m.get("playerId") == self.client.player_id:
             # The engine's clock acted for us; its actionResult is not an answer to any write of ours.
+            if getattr(self.client, "metrics", None) is not None:
+                self.client.metrics.missed("clock_acted", self.client.settings.username, self.key)
             if self.results:
                 self.give_up_results("ENGINE_CLOCK_ACTED")
             else:
@@ -1025,6 +1027,7 @@ class BluffPokerClient:
         self.run_id = uuid.uuid4().hex[:12]
         self.leave_counts: dict = {}
         self.buy_in_warned: set = set()
+        self.metrics = None  # metrics.DecisionMetrics, set by the table bots
 
     # -- state
 
