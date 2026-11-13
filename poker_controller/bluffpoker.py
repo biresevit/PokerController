@@ -254,7 +254,8 @@ def game_state(st: dict, player_id: str, *, key, now: float | None = None) -> di
     for flag in UNSUPPORTED:
         if st.get(flag) is True:
             raise BluffPokerError(f"UNSUPPORTED_FORMAT_{flag}", topic="tableState", terminal=True)
-    if isinstance(st.get("boardB"), list) and st["boardB"]:
+    # Run it twice fills boardB at the showdown; board A is the one reported (runItTwice says which it is).
+    if isinstance(st.get("boardB"), list) and st["boardB"] and not isinstance(st.get("runItTwice"), dict):
         raise BluffPokerError("UNSUPPORTED_FORMAT_secondBoard", topic="tableState", terminal=True)
     game = variant(st)
     if game is None:
@@ -693,6 +694,7 @@ class TableSocket:
         self.leave_ack: asyncio.Future | None = None
         self.leave_done: asyncio.Future | None = None
         self.leaving = self.closed = False
+        self.rit_hand = None  # handSeq of a run-it-twice vote this socket was offered and has not answered
         self.last_inbound = time.monotonic()
         self.tasks: set[asyncio.Task] = set()
 
@@ -770,6 +772,17 @@ class TableSocket:
                 future.set_result(m)
         elif kind in ("leaveTableResult", "leave_rejected", "seatVacated"):
             self.on_leave(m)
+        elif kind == "run_it_twice_offer":
+            # All-in with the betting closed: every player in the hand votes; one decline or silence means one
+            # board, and a silent player keeps the whole table waiting for the full window (15 s by default).
+            self.rit_hand = m.get("handSeq")
+            self.client.connection.emit({"t": "RunItTwiceOffer", "tableId": self.key, "handSeq": m.get("handSeq"),
+                                         "timeoutMs": m.get("timeoutMs")})
+        elif kind == "run_it_twice_response_ack":
+            if m.get("ok") is not True:
+                log.info("BluffPoker refused the run-it-twice answer at %s: %s", self.wire, m.get("reason"))
+        elif kind in ("run_it_twice_decision", "run_it_twice_outcome"):
+            self.rit_hand = None
         elif kind == "error":
             code = str(m.get("code") or "ENGINE_ERROR")
             log.warning("BluffPoker engine error at table %s: %s", self.wire, code)
@@ -864,6 +877,18 @@ class TableSocket:
                 self.leave_done.set_result("left")
         else:
             ack.set_exception(BluffPokerError(str(m.get("error") or "LEAVE_REJECTED"), topic="leave"))
+
+    async def run_it_twice(self, accepted: bool) -> dict:
+        """Answer the open run-it-twice vote; the engine acknowledges it with run_it_twice_response_ack."""
+        if self.rit_hand is None:
+            return {}
+        hand, self.rit_hand = self.rit_hand, None
+        message = {"type": "run_it_twice_response", "tableId": self.wire, "accepted": accepted is True}
+        if type(hand) is int:
+            message["handSeq"] = hand
+        if not await self.send(message):
+            raise BluffPokerError("SEND_NOT_WRITTEN", topic="run_it_twice_response")
+        return {"ok": True}
 
     async def leave(self, key: str) -> str:
         loop = asyncio.get_running_loop()
@@ -1207,7 +1232,8 @@ class BluffPokerClient:
         return await self.socket(table_id).command("sitIn")
 
     async def player_command(self, table_id, command: int):
-        """EvenBet player commands that have a BluffPoker counterpart: 10 back in play, 47 sit out next hand."""
+        """EvenBet player commands that have a BluffPoker counterpart: 10 back in play, 17/18 accept/decline run it
+        twice, 47 sit out next hand."""
         if command == 10:
             state = self.states.get(table_key(table_id), {})
             hero = self.hero_seat(state)
@@ -1216,7 +1242,10 @@ class BluffPokerClient:
             return {}
         if command == 47:
             return await self.socket(table_id).command("sitOut")
-        return {}  # e.g. run-it-twice answers: the engine applies its own default
+        if command in (17, 18):
+            sock = self.sockets.get(table_key(table_id))
+            return await sock.run_it_twice(command == 17) if sock is not None and not sock.closed else {}
+        return {}
 
     async def return_from_away(self, table_id):
         return await self.sit_in(table_id)
