@@ -510,3 +510,32 @@ def test_last_frame_that_already_has_the_hand_in_it_is_unchanged():
     showdown = {"Cards": ["ah", "kd", "2c", "3d", "4h", "5s", "9c"], "InGame": [True, True], "Winners": [10, 0]}
     assert complete_final_frame(previous, showdown) is showdown
     assert complete_final_frame(None, {"Cards": [], "InGame": [False], "Winners": [1]})["InGame"] == [False]
+
+
+async def test_session_reauth_on_refresh_logs_in_again_and_retries(token_dir):
+    seen, logins = [], []
+
+    def handler(request):
+        path = request.url.path
+        seen.append(path)
+        if path.endswith("/auth/login"):
+            logins.append(1)
+            n = len(logins)
+            return httpx.Response(200, json={"pokerToken": f"a{n}", "refreshToken": f"r{n}", "expiresIn": 3600,
+                                             "clientUserId": PID})
+        if path == "/auth/refresh":
+            return httpx.Response(401, json={"error": "SESSION_REAUTH"})
+        if path.endswith("/connection"):
+            return httpx.Response(200, json={"wsUrl": "wss://engine.test/ws/1", "tableId": TABLE, "gameType": "NLH",
+                                             "engineAuthMode": "jwt"})
+        if path.endswith("/ws-token"):
+            if request.headers["authorization"] == "Bearer a1":
+                return httpx.Response(401, json={"error": "UNAUTHORIZED"})
+            return httpx.Response(200, json={"wsToken": "t", "expiresIn": 60})
+        return httpx.Response(404)
+
+    hub = hub_with(handler)
+    await hub.login()
+    assert await hub.endpoint(TABLE, "NLH") == "wss://engine.test/ws/1?token=t"
+    assert len(logins) == 2 and not hub.failed and hub.access == "a2"
+    await hub.close()

@@ -526,6 +526,9 @@ class Hub:
                 # Refused (expired, or replaced by a login elsewhere): a normal login.
                 self.failed, self.access, self.restored = None, None, False
                 token_store.forget(self.settings.hub_url, self.account)
+        return await self.password_login()
+
+    async def password_login(self):
         s = self.settings
         if not s.email or not s.password:
             raise BluffPokerError("CREDENTIALS_NOT_CONFIGURED", topic="login", terminal=True)
@@ -559,6 +562,13 @@ class Hub:
                                        body={"refreshToken": self.refresh_token, "accessToken": self.access},
                                        topic="refresh")
             except BluffPokerError as error:
+                if error.terminal and error.code == "SESSION_REAUTH":
+                    # The hub ends refresh chains after a while and asks for a new login (live 13 Nov 2026: joins and
+                    # tournament registrations of accounts logged in for hours failed with it).
+                    log.info("BluffPoker asked %s to log in again (%s)", self.settings.username, error.code)
+                    self.access = None
+                    await self.password_login()
+                    return self.access
                 if error.terminal:
                     self.failed = "CREDENTIAL_EXPIRED"  # refused pair: no silent re-login
                     if not self.restored:
