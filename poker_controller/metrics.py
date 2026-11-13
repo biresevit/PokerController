@@ -1,6 +1,6 @@
 """Decision speed and missed actions, collected in memory and written to the database in batches.
 
-A table worker records each PDecision answer's duration (the HTTP call only, without the human-like pause), the
+A table worker records each PDecision answer's duration (the HTTP call without PDecision's human-like pause), the
 street and the opponents still in the hand, and each missed action. The owner drains the collector every few
 minutes and writes one row per (hour, street, opponents) and one row per missed action."""
 from __future__ import annotations
@@ -10,6 +10,16 @@ from datetime import datetime, timezone
 
 BANDS = (250, 500, 1000, 2000, 5000)  # ms: Under250 .. Under5000, then Over5000
 MAX_EVENTS = 5000
+
+
+def decision_ms(decision: dict, elapsed_ms: float) -> float:
+    """The time PDecision needed for a decision, without its human-like pause: PDecision sleeps inside the call
+    (HumanLikeDelays) and reports the sleep as RandomTimingMS. What is left is the calculation plus any waiting for
+    the table's lock, a thread or the network, which is what grows when a PC is overloaded."""
+    pause = decision.get("RandomTimingMS")
+    if isinstance(pause, (int, float)) and not isinstance(pause, bool) and pause > 0:
+        return max(0.0, elapsed_ms - pause)
+    return elapsed_ms
 
 
 def opponents_in_hand(state: dict, hero: int | None) -> int:

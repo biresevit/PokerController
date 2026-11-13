@@ -158,9 +158,9 @@ class Bot:
                       self.table_id, state["gi"], type(exc).__name__)
             decision = {"Action": 6, "Fallback": True}
         if self.metrics is not None and not decision.get("Fallback"):
-            from .metrics import opponents_in_hand
+            from .metrics import decision_ms, opponents_in_hand
             self.metrics.decision(state.get("m", {}).get("r"), opponents_in_hand(state, hero),
-                                  (time.monotonic() - asked) * 1000)
+                                  decision_ms(decision, (time.monotonic() - asked) * 1000))
         self.decision_hand = state["gi"]
         # A human needs time to see the dealt cards and to press the buttons (pacing.py). The turn is checked
         # again below, after the wait.
