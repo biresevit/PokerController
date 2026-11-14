@@ -1,4 +1,32 @@
-# PokerController
+# PokerController | Protocol adapters and workers
+
+An asynchronous Python worker connecting poker platforms to a local decision service. It translates protocol messages into shared table state, coordinates multiple tables, and executes scheduler commands.
+
+## Engineering highlights
+
+- WebSocket and REST adapters for EvenBet and BluffPoker with a shared state and decision pipeline.
+- Multi-table execution, seat reconciliation, guarded retries, payment idempotency, and restart recovery.
+- Operational telemetry, manual controls, table chat, and a companion Windows updater.
+
+**Technology:** Python 3.11, asyncio, WebSockets, HTTPX, SQL/ODBC, pytest, C# updater.
+
+## Platform architecture
+
+```text
+PokerBackoffice -> Azure SQL <- ScheduleController (Azure Functions)
+                                     | commands / telemetry
+                                PokerController
+                                     | REST
+                                  PDecision
+                                     |
+                         simulator / DecisionMaking
+```
+
+[PokerBackoffice](https://github.com/biresevit/PokerBackoffice) | [ScheduleController](https://github.com/biresevit/ScheduleController) | [PokerController](https://github.com/biresevit/PokerController) | [PDecision](https://github.com/biresevit/PDecision-portfolio) | [simulator](https://github.com/biresevit/simulator-portfolio)
+
+## Setup and operations
+
+A full deployment requires configured infrastructure, platform accounts, and companion components. The following sections describe setup, validation, and operational requirements.
 
 **Deploying:** see `../PokerBackoffice/docs/deploy.md`, section 7 (PC release).
 
