@@ -1,5 +1,7 @@
 # PokerController | Protocol adapters and workers
 
+> **Permitted use:** These bots may only be used for research, poker practice in the [simulator](https://github.com/biresevit/simulator-portfolio), poker practice through a real poker-site client, or authorized load testing to assess a poker site's stability under high traffic. Running bots at real-money tables without disclosing their use to all human players is prohibited.
+
 An asynchronous Python worker connecting poker platforms to a local decision service. It translates protocol messages into shared table state, coordinates multiple tables, and executes scheduler commands.
 
 ## Engineering highlights
@@ -70,11 +72,6 @@ python -m venv .venv
 # One login can play several NLH/PLO4 tables for 30 minutes, then leave all of them.
 .\.venv\Scripts\python.exe -m poker_controller play-multi --tables 128197713 128048285 128016534 --buy-in 80 --seconds 1800
 
-# Preview a repeatable nickname,profile import for an existing customer/casino.
-.\.venv\Scripts\python.exe -m poker_controller.import_profiles C:\Users\bires\Downloads\NICKNAME-PROFILE-500-20261025.csv
-
-# After reviewing the counts, commit it. Requires SqlConnectionString in the environment.
-.\.venv\Scripts\python.exe -m poker_controller.import_profiles C:\Users\bires\Downloads\NICKNAME-PROFILE-500-20261025.csv --apply
 ```
 
 ### BluffPoker
@@ -127,18 +124,8 @@ the Azure scheduler; it is deliberately not a PokerController command option.
 
 Use `--decision-url` and `PDECISION_API_KEY` for another PDecision instance. The
 controller checks health before taking a seat. PDecision retains its own existing
-machine registration, account/profile, and strategy configuration; this project
-does not change that database. The current PDecision service uses the platform
+machine registration; this project does not change that database. The current PDecision service uses the platform
 and casino from its machine registration.
-
-The profile importer uses `pyodbc` (`pip install -e ".[db]"`). It validates the
-header, unique nicknames and eight supported profile labels; checks that the
-customer has an active machine at the casino; and applies inserts or profile-only
-updates in one transaction. It preserves existing stake limits and active status.
-The importer writes to the existing `dbo.BotAccount` table, keyed by casino and
-nickname. `--customer` checks that the named customer runs that casino; account
-rows themselves are scoped by casino. Existing stake limits and active flags are
-preserved when their profile changes.
 
 The screenshot's table `113891676` may be empty. Choose a supported occupied table
 from `tables` to exercise actual hands. Seating can wait until the next big blind
