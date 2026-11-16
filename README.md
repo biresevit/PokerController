@@ -6,7 +6,7 @@ An asynchronous Python worker connecting poker platforms to a local decision ser
 
 ## Engineering highlights
 
-- WebSocket and REST adapters for EvenBet and BluffPoker with a shared state and decision pipeline.
+- WebSocket and REST adapters for two poker platforms with a shared state and decision pipeline.
 - Multi-table execution, seat reconciliation, guarded retries, payment idempotency, and restart recovery.
 - Operational telemetry, manual controls, table chat, and a companion Windows updater.
 
@@ -32,18 +32,16 @@ A full deployment requires configured infrastructure, platform accounts, and com
 
 **Deploying:** see `../PokerBackoffice/docs/deploy.md`, section 7 (PC release).
 
-Standalone Python EvenBet controller. It uses WebSockets for the poker server and
+Standalone Python poker-platform controller. It uses WebSockets for the poker server and
 REST for PDecision. It has no HopperV2, .NET, SQL, Azure, or browser dependency.
 
-Defaults are the supplied demo account (`monica` / `poker`),
-`wss://web.evenbetpoker.com/front`, Origin `https://demo.evenbetpoker.com`, skin
-`evenbetpoker`. Credentials can be overridden with `EVENBET_USERNAME` and
-`EVENBET_PASSWORD` or command options. No credentials or session tokens are logged.
+Defaults point at the platform's public demo environment and a demo account. Credentials can be
+overridden with environment variables or command options. No credentials or session tokens are logged.
 
 ## Setup
 
 ```powershell
-cd C:\Users\bires\projects\bot\PokerController
+cd <path to PokerController>
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[test]"
 .\.venv\Scripts\python.exe -m pytest -q
@@ -74,34 +72,32 @@ python -m venv .venv
 
 ```
 
-### BluffPoker
+### Second platform
 
-BluffPoker (enPlatform `BluffPokerPlatform` = 18) is played over its hub REST API and one engine WebSocket
-per table (`bluffpoker.py`, ported from BluffPoker's player connector). `BluffPokerClient` has the same
-interface as `EvenBetClient` and translates each table state into the EvenBet snapshot shape, so the bot,
-HandState mapping, manual control, rebuys, breaks and hand histories are shared.
+The second platform is played over its hub REST API and one engine WebSocket per table. Its client has the
+same interface as the first platform's client and translates each table state into the same snapshot shape,
+so the bot, HandState mapping, manual control, rebuys, breaks and hand histories are shared.
 
-Credentials stay on the PC in `C:\PokerSuiteluffpoker.json` (or the file named by `BLUFFPOKER_CONFIG`),
-never in the database or the repository:
+Credentials stay on the PC in a local JSON file under `C:\PokerSuite` (or the file named by an environment
+variable), never in the database or the repository:
 
 ```json
-{"hub_url": "https://hub.bluffpoker.club", "api_key": "<client API key>", "origin": "https://bluffpoker.club",
- "accounts": {"guido66": {"email": "<login>", "password": "<password>"}}}
+{"hub_url": "<hub URL>", "api_key": "<client API key>", "origin": "<site origin>",
+ "accounts": {"<username>": {"email": "<login>", "password": "<password>"}}}
 ```
 
-`BP_HUB_BASE_URL`, `BP_CLIENT_API_KEY`, `BP_ORIGIN` and `BP_CLIENT_IP` override the file; a scheduler site's
-`EndpointUrl` overrides the hub URL.
+Environment variables override the file; a scheduler site's `EndpointUrl` overrides the hub URL.
 
 ```powershell
-python -m poker_controller tables --site bluffpoker --username guido66
-python -m poker_controller play --site bluffpoker --username guido66 --table <table id> --buy-in 100 --seconds 300
+python -m poker_controller tables --site <site> --username <username>
+python -m poker_controller play --site <site> --username <username> --table <table id> --buy-in 100 --seconds 300
 ```
 
 The hub allows 30 logins per 15 minutes per IP and 10 failed logins per account; sessions reuse their token
 (refreshed before it expires). A rejoin refused with `REJOIN_MIN_NOT_MET` is repeated once with exactly the
 stack the bot left with (`rejoin.required`). Seat payments carry an idempotency key, so an unconfirmed payment
 is asked again with the same key and never paid twice; game actions are never resent. Tournaments, chat and
-showing cards are not supported on BluffPoker yet.
+showing cards are not supported on this platform yet.
 
 ### Azure-scheduled worker
 
@@ -110,7 +106,7 @@ and the PokerController worker; it does not run a local scheduler. Start the
 worker after PDecision is healthy on port 5005:
 
 ```powershell
-cd C:\Users\bires\projects\bot\PokerController
+cd <path to PokerController>
 $env:SqlConnectionString = '<pokerdb connection string>'
 .\.venv\Scripts\python.exe -m poker_controller.worker --output artifacts\azure-worker
 ```
@@ -145,7 +141,7 @@ outcomes are never retried automatically.
 3. Free-seat selection, `ReserveSeat`, `SitDown`, stack confirmation, automatic
    blinds, reattachment to an existing seat, return from away, and table exit.
 4. Hero-relative `HandState`: cards, blinds, stacks, bets, board, pot, dealer,
-   dealt seats, and hand identity. Zero-valued indices omitted by EvenBet are
+   dealt seats, and hand identity. Zero-valued indices omitted by the platform are
    decoded as zero.
 5. `POST /api/decision` on the hero's turn, then `Play` with the returned action.
    A PDecision raise-to amount is converted into additional minor-unit funds,
@@ -158,12 +154,12 @@ outcomes are never retried automatically.
 Cash NLH, PLO4, and PLO5 state/action conversion is implemented. Live verification
 has covered NLH and PLO4. Tournament scheduling, tournament
 cashiers, unusual game variants, double boards, and bomb pots aren't ported.
-Play commands buffer snapshots until EvenBet reports a final payout, then post
+Play commands buffer snapshots until the platform reports a final payout, then post
 the complete observed hand to `/api/handhistory`. It works with `play` and
 `play-multi`. Hands entered mid-game or without a final payout are omitted. The
 winner amounts are inferred from the final chip increase, so split and side-pot
 hands need further validation before using the resulting statistics for production.
-PDecision must report `handHistoryCasino=Evenbet`, `handHistoryPlatform=EvenBet`,
+PDecision must report the expected hand-history casino and platform,
 and Azure hand-history upload enabled in `/api/health`; the command refuses to
 send otherwise. PDecision uses this PC's machine registration for the casino and
 platform. After posting the frames, PokerController calls
@@ -194,8 +190,8 @@ Avoid running two live controllers with the same account simultaneously.
 | Module | Responsibility |
 |---|---|
 | `transport.py` | TLS WebSocket, one receive loop, request correlation, notifications, redaction |
-| `client.py` | EvenBet session and table/seat/buy-in operations |
-| `bluffpoker.py` | BluffPoker hub API, engine table sockets, state translation, same interface as `client.py` |
+| `client.py` | First platform: session and table/seat/buy-in operations |
+| second-platform module | Hub API, engine table sockets, state translation, same interface as `client.py` |
 | `sites.py` | Platforms (enPlatform), client per platform, table ids |
 | `state.py` | Protocol-to-HandState conversion and action amounts |
 | `decision.py` | PDecision REST adapter |
@@ -203,8 +199,8 @@ Avoid running two live controllers with the same account simultaneously.
 | `multitable.py` | One-session table dispatch, independent bot workers, per-table cleanup |
 | `cli.py` | Configuration, commands, captures, cleanup |
 
-Adapted from the `EvenbetDev` branch of the sibling `hopperv2` repository,
-particularly its Evenbet login, WebSocket requests, scraper, cash cashier,
+Adapted from the sibling `hopperv2` repository,
+particularly its login, WebSocket requests, scraper, cash cashier,
 `RaiseByCalculator`, and action controller. The current frontend accepts table
 requests through `/front`; no hardcoded game-slot connection is needed for the
 tested flow. Future Azure configuration belongs behind a settings/account
