@@ -1,5 +1,7 @@
 # PokerController | Protocol adapters and workers
 
+**Part of the PokerFill platform** · five repositories, one per component · [project overview](https://github.com/biresevit#pokerfill)
+
 > **Permitted use:** These bots may only be used for research, poker practice in the [simulator](https://github.com/biresevit/simulator-portfolio), poker practice through a real poker-site client, or authorized load testing to assess a poker site's stability under high traffic. Running bots at real-money tables without disclosing their use to all human players is prohibited.
 
 An asynchronous Python worker connecting poker platforms to a local decision service. It translates protocol messages into shared table state, coordinates multiple tables, and executes scheduler commands.
