@@ -512,7 +512,8 @@ def test_last_frame_that_already_has_the_hand_in_it_is_unchanged():
     assert complete_final_frame(None, {"Cards": [], "InGame": [False], "Winners": [1]})["InGame"] == [False]
 
 
-async def test_session_reauth_on_refresh_logs_in_again_and_retries(token_dir):
+@pytest.mark.parametrize("code", ["SESSION_REAUTH", "SESSION_EXPIRED"])
+async def test_session_reauth_on_refresh_logs_in_again_and_retries(token_dir, code):
     seen, logins = [], []
 
     def handler(request):
@@ -524,7 +525,7 @@ async def test_session_reauth_on_refresh_logs_in_again_and_retries(token_dir):
             return httpx.Response(200, json={"pokerToken": f"a{n}", "refreshToken": f"r{n}", "expiresIn": 3600,
                                              "clientUserId": PID})
         if path == "/auth/refresh":
-            return httpx.Response(401, json={"error": "SESSION_REAUTH"})
+            return httpx.Response(401, json={"error": code})
         if path.endswith("/connection"):
             return httpx.Response(200, json={"wsUrl": "wss://engine.test/ws/1", "tableId": TABLE, "gameType": "NLH",
                                              "engineAuthMode": "jwt"})
@@ -538,4 +539,88 @@ async def test_session_reauth_on_refresh_logs_in_again_and_retries(token_dir):
     await hub.login()
     assert await hub.endpoint(TABLE, "NLH") == "wss://engine.test/ws/1?token=t"
     assert len(logins) == 2 and not hub.failed and hub.access == "a2"
+    await hub.close()
+
+@pytest.mark.parametrize("operation", ["ring", "mtt"])
+@pytest.mark.parametrize("expired_access", [False, True])
+async def test_session_expired_recovers_ring_and_mtt_once(token_dir, operation, expired_access):
+    calls = []
+    target = "/api/poker-wallet/buy-in-seat" if operation == "ring" else f"/player/tournaments/{TABLE}/register"
+
+    def handler(request):
+        path = request.url.path
+        calls.append((path, request.headers.get("authorization"), request.headers.get("x-idempotency-key")))
+        if path.endswith("/auth/login"):
+            n = sum(p.endswith("/auth/login") for p, _, _ in calls)
+            return httpx.Response(200, json={"pokerToken": f"a{n}", "refreshToken": f"r{n}",
+                                             "expiresIn": 3600, "clientUserId": PID})
+        if path == "/auth/refresh":
+            return httpx.Response(401, json={"error": "SESSION_EXPIRED"})
+        if path == target:
+            if request.headers["authorization"] == "Bearer a1":
+                return httpx.Response(401, json={"error": "SESSION_EXPIRED"})
+            return httpx.Response(200, json={"ok": True, "reservedChips": 10,
+                                             "engine": {"ok": True, "seat": 2}})
+        return httpx.Response(404)
+
+    hub = hub_with(handler)
+    await hub.login()
+    if expired_access:
+        hub.expires = 0
+    if operation == "ring":
+        await hub.buy_in_seat(TABLE, 2, 1000, "same-join-key")
+    else:
+        await hub.register(TABLE)
+    assert sum(p.endswith("/auth/login") for p, _, _ in calls) == 2
+    assert sum(p == "/auth/refresh" for p, _, _ in calls) == 1
+    attempts = [(auth, key) for p, auth, key in calls if p == target]
+    assert len(attempts) == (1 if expired_access else 2)
+    assert attempts[-1][0] == "Bearer a2"
+    if operation == "ring":
+        assert all(key == "same-join-key" for _, key in attempts)
+    assert not hub.failed
+    await hub.close()
+
+async def test_session_expired_concurrent_refresh_shares_one_login(token_dir):
+    import asyncio
+    logins = []
+    refreshes = []
+
+    async def handler(request):
+        if request.url.path.endswith("/auth/login"):
+            logins.append(1)
+            await asyncio.sleep(0)
+            n = len(logins)
+            return httpx.Response(200, json={"pokerToken": f"a{n}", "refreshToken": f"r{n}",
+                                             "expiresIn": 3600, "clientUserId": PID})
+        refreshes.append(1)
+        return httpx.Response(401, json={"error": "SESSION_EXPIRED"})
+
+    hub = hub_with(handler)
+    await hub.login()
+    hub.expires = 0
+    assert await asyncio.gather(hub.refresh("a1"), hub.refresh("a1")) == ["a2", "a2"]
+    assert len(logins) == 2 and len(refreshes) == 1
+    await hub.close()
+
+
+async def test_session_expired_retry_stops_after_second_unauthorized(token_dir):
+    calls = []
+
+    def handler(request):
+        path = request.url.path
+        calls.append(path)
+        if path.endswith("/auth/login"):
+            n = calls.count(path)
+            return httpx.Response(200, json={"pokerToken": f"a{n}", "refreshToken": f"r{n}",
+                                             "expiresIn": 3600, "clientUserId": PID})
+        return httpx.Response(401, json={"error": "SESSION_EXPIRED"})
+
+    hub = hub_with(handler)
+    await hub.login()
+    with pytest.raises(bp.BluffPokerError):
+        await hub.register(TABLE)
+    assert calls.count("/integrations/clients/auth/login") == 2
+    assert calls.count("/auth/refresh") == 1
+    assert calls.count(f"/player/tournaments/{TABLE}/register") == 2
     await hub.close()

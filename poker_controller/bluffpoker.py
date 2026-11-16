@@ -562,9 +562,11 @@ class Hub:
                                        body={"refreshToken": self.refresh_token, "accessToken": self.access},
                                        topic="refresh")
             except BluffPokerError as error:
-                if error.terminal and error.code == "SESSION_REAUTH":
+                if error.status == 401 and error.code in ("SESSION_REAUTH", "SESSION_EXPIRED"):
                     # The hub ends refresh chains after a while and asks for a new login (live 13 Nov 2026: joins and
                     # tournament registrations of accounts logged in for hours failed with it).
+                    # SESSION_EXPIRED also rejects the account's refresh chain. Recover under
+                    # the same lock so concurrent tables share one new login and token pair.
                     log.info("BluffPoker asked %s to log in again (%s)", self.settings.username, error.code)
                     self.access = None
                     await self.password_login()
