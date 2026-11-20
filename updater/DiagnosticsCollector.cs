@@ -7,7 +7,7 @@ using System.Text.RegularExpressions;
 using System.Diagnostics;
 
 static class DiagnosticsCollector {
- internal const string Version="1.0.16";
+ internal const string Version="1.0.21";
  static readonly JsonSerializerOptions Json=new(JsonSerializerDefaults.Web);
  record Work(string Id,string Claim,int Hours,
   [property:System.Text.Json.Serialization.JsonPropertyName("upload_url")]string UploadUrl,
@@ -103,16 +103,23 @@ static class DiagnosticsCollector {
   if(Directory.Exists(runs))foreach(var folder in Directory.EnumerateDirectories(runs).OrderByDescending(Directory.GetLastWriteTimeUtc).Take(50)){
    foreach(var name in new[]{"worker.log","pilot.log","status.json"})Add(Path.Combine(folder,name),runs,"controller/"+Path.GetFileName(folder)+"/"+name);
   }
-  var secrets=Secrets(c);var manifest=new List<object>();long remaining=48L*1024*1024;
+  var secrets=Secrets(c);var manifest=new List<object>();long remaining=512L*1024*1024;
   using(var zip=ZipFile.Open(destination,ZipArchiveMode.Create)){
    foreach(var file in files){
     try{
      using var stream=new FileStream(file.Path,FileMode.Open,FileAccess.Read,FileShare.ReadWrite|FileShare.Delete);
-     var limit=(int)Math.Min(8L*1024*1024,remaining);if(limit<=0)break;
+     var limit=Math.Min(128L*1024*1024,remaining);
+     if(limit<=0){manifest.Add(new{file=file.Name,skipped="Uncompressed collection budget exhausted"});continue;}
      var original=stream.Length;stream.Position=Math.Max(0,original-limit);var offset=stream.Position;
-     var bytes=new byte[Math.Min(original-offset,limit)];int used=0,n;while(used<bytes.Length&&(n=stream.Read(bytes,used,bytes.Length-used))>0)used+=n;
-     var text=Encoding.UTF8.GetString(bytes,0,used);if(offset>0&&text.Contains('\n'))text=text[(text.IndexOf('\n')+1)..];
-     text=Redact(text,secrets);var entry=zip.CreateEntry(file.Name,CompressionLevel.Fastest);using(var writer=new StreamWriter(entry.Open(),new UTF8Encoding(false)))writer.Write(text);
+     // Stream a fixed file snapshot, without loading large retained logs into RAM.
+     using var window=new LogWindow(stream,Math.Min(original-offset,limit));
+     using var reader=new StreamReader(window,Encoding.UTF8,true,65536,leaveOpen:true);
+     if(offset>0)reader.ReadLine(); // discard a partial first line in a bounded tail
+     var entry=zip.CreateEntry(file.Name,CompressionLevel.Fastest);
+     using(var writer=new StreamWriter(entry.Open(),new UTF8Encoding(false))){
+      string? line;while((line=reader.ReadLine())!=null)writer.WriteLine(Redact(line,secrets));
+     }
+     var used=stream.Position-offset;
      remaining-=used;manifest.Add(new{file=file.Name,original_bytes=original,included_bytes=used,truncated=offset>0,modified_utc=File.GetLastWriteTimeUtc(file.Path)});
     }catch{manifest.Add(new{file=file.Name,skipped="File unavailable"});}
    }
@@ -122,11 +129,24 @@ static class DiagnosticsCollector {
     string? decisionVersion=null;try{decisionVersion=FileVersionInfo.GetVersionInfo(Safe(active.DecisionExe,c.Root)).FileVersion;}catch{}
     applications=new{installed_release_id=active.ReleaseId,pdecision_version=decisionVersion,decision_pid=active.DecisionPid,worker_pid=active.WorkerPid};
    }catch{}
-   var summary=new{machine_id=c.MachineId,site_id=c.SiteId,hostname=Environment.MachineName,os=Environment.OSVersion.ToString(),collector_version=Version,applications,captured_utc=DateTime.UtcNow,hours,
-    selection="Recent files modified within the requested hours; bounded tails, up to 8 MiB per file and 48 MiB total. No settings or enrollment files included.",files=manifest};
+   var zone=TimeZoneInfo.Local.Id;var iana=TimeZoneInfo.TryConvertWindowsIdToIanaId(zone,out var mapped)?mapped:zone;
+   var summary=new{iana_time_zone=iana,machine_id=c.MachineId,site_id=c.SiteId,hostname=Environment.MachineName,os=Environment.OSVersion.ToString(),collector_version=Version,applications,captured_utc=DateTime.UtcNow,hours,
+    selection="Retained application files modified within the requested hours; complete files up to 128 MiB each, 512 MiB uncompressed total and the server compressed-size limit. Larger files use bounded tails. No settings or enrollment files included.",files=manifest};
    using var summaryWriter=new StreamWriter(zip.CreateEntry("manifest.json").Open());summaryWriter.Write(JsonSerializer.Serialize(summary,new JsonSerializerOptions{WriteIndented=true}));
   }
   if(new FileInfo(destination).Length>maxBytes)throw new InvalidDataException("Diagnostic package exceeds size limit");
+ }
+ // A read-only snapshot window prevents a live writer from extending collection forever.
+ sealed class LogWindow(Stream source,long remaining):Stream {
+  public override bool CanRead=>true;public override bool CanSeek=>false;public override bool CanWrite=>false;
+  public override long Length=>throw new NotSupportedException();
+  public override long Position {get=>throw new NotSupportedException();set=>throw new NotSupportedException();}
+  public override int Read(byte[] buffer,int offset,int count){
+   var n=source.Read(buffer,offset,(int)Math.Min(count,remaining));remaining-=n;return n;
+  }
+  public override void Flush(){}public override long Seek(long o,SeekOrigin origin)=>throw new NotSupportedException();
+  public override void SetLength(long value)=>throw new NotSupportedException();
+  public override void Write(byte[] b,int o,int c)=>throw new NotSupportedException();
  }
  internal static void SelfTest(){
   var suite=Path.Combine(Path.GetTempPath(),"PokerSuite-diagnostics-"+Guid.NewGuid());var root=Path.Combine(suite,"Managed");Directory.CreateDirectory(Path.Combine(root,"runs","test"));Directory.CreateDirectory(Path.Combine(root,"config"));Directory.CreateDirectory(Path.Combine(suite,"Logs"));
@@ -134,10 +154,15 @@ static class DiagnosticsCollector {
   File.WriteAllText(Path.Combine(root,"config","worker-env.json"),JsonSerializer.Serialize(new{SCHEDULE_SQL_CONNECTION_STRING=$"Server=example;Password={secret};"}));
   File.WriteAllText(Path.Combine(root,"runs","test","worker.log"),$"password={secret}\n{token}\nhttps://test.blob.core.windows.net/a?sig=hidden\nConnection lost\n");
   File.WriteAllText(Path.Combine(suite,"Logs","PDecision.log"),"PDecision ready");
+  var retained=Path.Combine(root,"runs","test","pilot.log");
+  using(var writer=new StreamWriter(retained)){
+   writer.WriteLine("retained-start-before-old-tail-limit");
+   for(var i=0;i<150000;i++)writer.WriteLine(new string('x',64));
+  }
   var config=new Config("https://example.invalid",1,1,token,[],root,"http://localhost/");var path=Path.Combine(suite,"test.zip");Collect(config,24,path,64*1024*1024);
   using(var zip=ZipFile.OpenRead(path)){
    var all=string.Join("\n",zip.Entries.Select(e=>{using var r=new StreamReader(e.Open());return r.ReadToEnd();}));
-   if(all.Contains(token)||all.Contains(secret)||all.Contains("sig=hidden")||!all.Contains("Connection lost")||zip.Entries.Any(e=>e.Name.Contains("worker-env")))throw new Exception("Diagnostics redaction or allowlist failed");
+   if(all.Contains(token)||all.Contains(secret)||all.Contains("sig=hidden")||!all.Contains("Connection lost")||!all.Contains("retained-start-before-old-tail-limit")||zip.Entries.Any(e=>e.Name.Contains("worker-env")))throw new Exception("Diagnostics redaction or allowlist failed");
   }
   bool blocked=false;try{Safe(Path.Combine(suite,"outside.log"),root);}catch(InvalidDataException){blocked=true;}if(!blocked)throw new Exception("Diagnostic path escape accepted");
   Directory.Delete(suite,true);

@@ -36,7 +36,7 @@ static class Program {
  static string LogFile=>Path.Combine(C.Root,"updater.log");
  // Serializes supervision restarts with intentional stops and installs.
  static readonly SemaphoreSlim StateLock=new(1,1);
- const string AgentVersion="1.0.20";
+ const string AgentVersion="1.0.21";
  // A stopped application is noticed within this time (BluffPoker keeps a disconnected seat ~29 s).
  static readonly TimeSpan SuperviseEvery=TimeSpan.FromSeconds(10);
  static void Log(string value){lock(Api)File.AppendAllText(LogFile,$"{DateTime.UtcNow:O} {value.Split('?')[0]}{Environment.NewLine}");}
